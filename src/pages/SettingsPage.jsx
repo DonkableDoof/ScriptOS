@@ -7,6 +7,8 @@ import { pickTextFile } from "../lib/native";
 import { notify } from "../lib/notice";
 import { TYPES } from "../lib/script";
 import { sfx } from "../lib/sound";
+import { uid } from "../lib/storage";
+import { randomColor } from "../lib/colors";
 
 function Toggle({ on, onChange }) {
   return <button className="switch" data-on={Boolean(on)} role="switch" aria-checked={Boolean(on)} onClick={() => onChange(!on)} />;
@@ -39,13 +41,22 @@ function Segmented({ value, options, onChange }) {
 const SHORTCUTS = [
   ["Enter", "Next element (Scene → Action, Character → Dialogue, Dialogue → Character…)"],
   ["Enter on an empty line", "Swap Action ⇄ Character"],
-  ["Tab / Shift+Tab", "Cycle the element type"],
-  ["/", "Element menu"],
+  ["Tab / Shift+Tab", "Cycle the element type, or take the suggested name"],
+  ["/", "Menu of every element and colour"],
   ["Shift+Enter", "Line break inside an element"],
   ["Ctrl+B / I / U", "Bold, italic, underline"],
-  ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
+  ["Ctrl+Shift+X", "Strikethrough"],
+  ["**text**  *text*  _text_  ~~text~~", "Bold, italic, underline, strikethrough as you type"],
+  ["Alt+1 … 9", "Colour the line or the highlighted text (1 = default)"],
+  ["Alt+↑ / Alt+↓", "Move the line, or everything selected, up or down"],
+  ["Ctrl+D", "Duplicate"],
+  ["Drag across lines", "Highlight text over several elements"],
+  ["Shift+arrows", "Extend a highlight into the next lines"],
+  ["Drag in the margin", "Box-select whole elements"],
   ["Ctrl+A twice", "Select every element (then Delete, Ctrl+C, Ctrl+X)"],
   ["Shift+click handles", "Select a range of elements"],
+  ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
+  ["Ctrl+scroll", "Zoom the page (Ctrl+= / Ctrl+- too, Ctrl+0 for 100%)"],
 ];
 
 export default function SettingsPage({ navigate }) {
@@ -161,10 +172,52 @@ export default function SettingsPage({ navigate }) {
           <Setting title="Smart suggestions" hint="Offers character names, locations, times of day and transitions as you type.">
             <Toggle on={settings.autocomplete} onChange={(autocomplete) => set({ autocomplete })} />
           </Setting>
+          <Setting title="Colour new characters" hint="Gives each new character their own colour, carried through their cue and dialogue. Change or clear a colour from the dot beside their name in the outline.">
+            <Toggle on={settings.autoCastColors} onChange={(autoCastColors) => set({ autoCastColors })} />
+          </Setting>
+          <Setting
+            title="Custom colours"
+            hint="Your own named colours. They appear in every colour picker, and typing / and the name applies one. Lines already coloured keep their colour if you delete it here."
+          >
+            <div className="custom-colors">
+              {(settings.customColors || []).map((c) => (
+                <div key={c.id} className="custom-color">
+                  <input
+                    type="color"
+                    value={c.hex}
+                    aria-label={`${c.name} colour`}
+                    onChange={(e) => set({ customColors: settings.customColors.map((x) => (x.id === c.id ? { ...x, hex: e.target.value } : x)) })}
+                  />
+                  <input
+                    value={c.name}
+                    placeholder="Name"
+                    maxLength={24}
+                    onChange={(e) => set({ customColors: settings.customColors.map((x) => (x.id === c.id ? { ...x, name: e.target.value } : x)) })}
+                  />
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    aria-label={`Delete ${c.name}`}
+                    onClick={() => set({ customColors: settings.customColors.filter((x) => x.id !== c.id) })}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <button
+                className="btn btn-sm"
+                onClick={() => {
+                  set({ customColors: [...(settings.customColors || []), { id: uid(), name: "", hex: randomColor() }] });
+                  sfx.play("add");
+                }}
+              >
+                + Add Colour
+              </button>
+            </div>
+          </Setting>
           <Setting title="Typewriter scrolling" hint="Keeps the line you are writing in the middle of the screen.">
             <Toggle on={settings.typewriterScroll} onChange={(typewriterScroll) => set({ typewriterScroll })} />
           </Setting>
-          <Setting title="Typing sounds" hint="A typewriter key strike for every letter and a carriage return on Enter.">
+          <Setting title="Typing sounds" hint="The click of a mechanical keyboard for every key you press and release.">
             <Toggle
               on={settings.typewriterSounds}
               onChange={(typewriterSounds) => {

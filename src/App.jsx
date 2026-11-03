@@ -9,6 +9,7 @@ import { holdCloseUntilSaved, openExternal, revealWindow } from "./lib/native";
 import { NOTICE_EVENT } from "./lib/notice";
 import Home from "./pages/Home";
 import ScriptPage from "./pages/ScriptPage";
+import ScramblePage from "./pages/ScramblePage";
 import SettingsPage from "./pages/SettingsPage";
 import SaveGuard from "./components/SaveGuard";
 
@@ -77,6 +78,7 @@ function Router() {
     >
       {route.page === "home" && <Home navigate={navigate} />}
       {route.page === "script" && <ScriptPage key={route.id} scriptId={route.id} navigate={navigate} />}
+      {route.page === "scramble" && <ScramblePage key={route.id} scrambleId={route.id} navigate={navigate} />}
       {route.page === "settings" && <SettingsPage navigate={navigate} />}
       <Notices />
       <SaveGuard />
@@ -106,6 +108,19 @@ export default function App() {
     };
     document.addEventListener("click", onClick);
     return () => document.removeEventListener("click", onClick);
+  }, []);
+
+  // The webview's own right-click menu (Back, Reload, Inspect…) has no place in the
+  // app. It stays only where you type, for spelling suggestions and copy/paste;
+  // the app's own right-click menus (script cards) cancel it themselves.
+  useEffect(() => {
+    const onMenu = (e) => {
+      if (e.defaultPrevented) return;
+      if (e.target.closest?.("input, textarea, [contenteditable='true']")) return;
+      e.preventDefault();
+    };
+    document.addEventListener("contextmenu", onMenu);
+    return () => document.removeEventListener("contextmenu", onMenu);
   }, []);
 
   // Closing the window must not outrun the last save.

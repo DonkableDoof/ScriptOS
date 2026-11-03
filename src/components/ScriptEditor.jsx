@@ -1,19 +1,20 @@
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Popover from "./Popover";
+import Swatches from "./Swatches";
+import NewColor from "./NewColor";
 import {
-  TYPES,
-  TYPE_BY_KEY,
-  NEXT,
-  TAB_ORDER,
   emptyBlock,
-  typeForHotkey,
   suggestionsFor,
   plainText,
   escapeHtml,
+  characterName,
 } from "../lib/script";
-import { parseFountain, toFountain } from "../lib/fountain";
+import { colorForKey, paletteOf } from "../lib/colors";
+import { SCRIPT_PROFILE } from "../lib/profiles";
 import { sfx } from "../lib/sound";
 import { uid } from "../lib/storage";
+import { uiZoom } from "../lib/zoom";
 
 // ---------------------------------------------------------------------------
 // Caret helpers. Each block body is its own contenteditable, so positions are
@@ -54,22 +55,37 @@ const caretOffset = (el) => {
   return probe.toString().length;
 };
 
-const deleteFromOffset = (el, offset) => {
-  const range = document.createRange();
+// Text offset of where a selection's moving end is, inside one element.
+const focusOffset = (el) => {
+  const sel = window.getSelection();
+  if (!sel.focusNode || !el.contains(sel.focusNode)) return null;
+  const probe = document.createRange();
+  probe.selectNodeContents(el);
+  probe.setEnd(sel.focusNode, sel.focusOffset);
+  return probe.toString().length;
+};
+
+// The DOM position of a text offset inside one element, as [node, offset].
+const textPoint = (el, offset) => {
   let left = offset;
-  let node = null;
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let node = null;
   while (walker.nextNode()) {
     node = walker.currentNode;
-    if (node.length >= left) break;
+    if (node.length >= left) return [node, left];
     left -= node.length;
   }
-  if (node) range.setStart(node, Math.min(left, node.length));
-  else range.setStart(el, 0);
-  range.setEnd(el, el.childNodes.length);
+  return node ? [node, node.length] : [el, 0];
+};
+
+// Removes the characters between two text offsets and leaves the caret there.
+const deleteBetween = (el, start, end) => {
+  const range = document.createRange();
+  range.setStart(...textPoint(el, start));
+  range.setEnd(...textPoint(el, Math.max(start, end)));
   range.deleteContents();
   el.normalize();
-  placeCaret(el);
+  placeCaret(el, start);
 };
 
 const caretRect = () => {
@@ -80,16 +96,20 @@ const caretRect = () => {
   return range.getClientRects()[0] || null;
 };
 
+const focusRect = () => {
+  const sel = window.getSelection();
+  if (!sel.focusNode) return null;
+  const range = document.createRange();
+  range.setStart(sel.focusNode, sel.focusOffset);
+  return range.getClientRects()[0] || null;
+};
+
 const lineHeightOf = (el) => parseFloat(getComputedStyle(el).lineHeight) || 24;
 
 // Arrow keys leave a block from its first or last visual line, not only from its
 // very first or last character.
-const atLineEdge = (el, dir) => {
-  const sel = window.getSelection();
-  if (!sel.rangeCount || !sel.getRangeAt(0).collapsed) return false;
-  const rect = caretRect();
-  const off = caretOffset(el);
-  if (!rect) return dir < 0 ? off === 0 : off >= el.textContent.length;
+const atLineEdge = (el, dir, rect = caretRect()) => {
+  if (!rect) return true;
   const box = el.getBoundingClientRect();
   const lh = lineHeightOf(el);
   return dir < 0 ? rect.top - box.top < lh * 0.8 : box.bottom - rect.bottom < lh * 0.8;
@@ -118,10 +138,53 @@ const placeAtX = (el, x, edge) => {
   } else placeCaret(el, edge === "top" ? 0 : null);
 };
 
-const exec = (cmd) => document.execCommand(cmd, false, null);
+// Bold, italic and underline go in as plain tags, which Fountain export and print
+// understand; only colour needs a styled span.
+// A formatting command fires an input event of its own. Lines ignore those (see
+// onInput): whoever ran the command saves the result as one undo step, rather than
+// it being half-saved as typing first.
+let commandRunning = false;
+const exec = (cmd, value = null) => {
+  commandRunning = true;
+  try {
+    document.execCommand("styleWithCSS", false, cmd === "foreColor");
+    document.execCommand(cmd, false, value);
+  } finally {
+    commandRunning = false;
+  }
+};
+
+// Pasted or older text often carries its own colour; clearing it first means a
+// new colour actually takes instead of losing to a nested span.
+const clearColorsIn = (range) => {
+  const scope =
+    range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
+  scope?.querySelectorAll("[style*='color'], font[color]").forEach((el) => {
+    if (!range.intersectsNode(el) || el.dataset?.blockId) return;
+    el.style.color = "";
+    el.removeAttribute("color");
+    if (!el.getAttribute("style")) el.removeAttribute("style");
+  });
+};
+
+const paintSelection = (hex) => {
+  const sel = window.getSelection();
+  if (!sel?.rangeCount || sel.isCollapsed) return;
+  clearColorsIn(sel.getRangeAt(0));
+  if (hex) exec("foreColor", hex);
+};
 
 const textOf = (html) => plainText(html).trim();
-const isAllCaps = (s) => /\p{L}/u.test(s) && s === s.toUpperCase();
+const htmlLength = (html) => {
+  const d = document.createElement("div");
+  d.innerHTML = html;
+  return d.textContent.length;
+};
+const rangeHtml = (range) => {
+  const d = document.createElement("div");
+  d.appendChild(range.cloneContents());
+  return d.innerHTML;
+};
 const stripParens = (html) => {
   let out = String(html || "").trim();
   if (out.startsWith("(")) out = out.slice(1);
@@ -129,51 +192,203 @@ const stripParens = (html) => {
   return out;
 };
 
-// Typing one of these as the whole content of an Action line turns it into
-// another element. `keep` leaves what you typed in place (INT. stays INT.).
+// ---------------------------------------------------------------------------
+// Highlighting across blocks. Chromium keeps a mouse drag inside the
+// contenteditable it began in, so while a highlight spans blocks the editor
+// itself becomes the one editing host and the blocks hand it their editing.
+// ---------------------------------------------------------------------------
+const bodyOf = (node) => (node?.nodeType === 1 ? node : node?.parentElement)?.closest?.(".block-body") || null;
+
+const enterDocMode = (root) => {
+  if (!root || root.dataset.docMode === "on") return;
+  root.dataset.docMode = "on";
+  root.setAttribute("contenteditable", "true");
+  root.querySelectorAll("[data-block-id]").forEach((el) => el.removeAttribute("contenteditable"));
+};
+
+const exitDocMode = (root) => {
+  if (!root || root.dataset.docMode !== "on") return;
+  delete root.dataset.docMode;
+  root.removeAttribute("contenteditable");
+  root.querySelectorAll("[data-block-id]").forEach((el) => el.setAttribute("contenteditable", "true"));
+};
+
+// Moves the far end of a highlight one character or one visual line, crossing
+// into the next block when it runs out. Chromium's own Shift+arrow handling gets
+// lost among the gutters once the editor is the editing host, so this measures
+// the lines itself. `goal` keeps the column steady over a run of line moves.
+const stepHighlight = (root, dir, granularity, goal) => {
+  const sel = window.getSelection();
+  if (!sel?.focusNode) return false;
+  const bodies = [...root.querySelectorAll("[data-block-id]")];
+  const body = bodyOf(sel.focusNode);
+  const extendTo = ([node, offset]) => {
+    sel.setBaseAndExtent(sel.anchorNode, sel.anchorOffset, node, offset);
+    (node.nodeType === 1 ? node : node.parentElement)?.scrollIntoView({ block: "nearest" });
+    return true;
+  };
+
+  if (granularity === "character") {
+    goal.current = null;
+    if (!body) return false;
+    const offset = focusOffset(body);
+    const len = body.textContent.length;
+    if ((dir > 0 && offset < len) || (dir < 0 && offset > 0)) return extendTo(textPoint(body, offset + dir));
+    const next = bodies[bodies.indexOf(body) + dir];
+    return next ? extendTo(textPoint(next, dir > 0 ? 0 : next.textContent.length)) : false;
+  }
+
+  const rect = focusRect() || body?.getBoundingClientRect();
+  if (!rect) return false;
+  if (goal.current == null) goal.current = rect.left;
+  const lh = lineHeightOf(root);
+  let y = dir > 0 ? rect.bottom + lh * 0.5 : rect.top - lh * 0.5;
+  for (let i = 0; i < 12; i++, y += (dir * lh) / 2) {
+    const target = bodies.find((b) => {
+      const box = b.getBoundingClientRect();
+      return y >= box.top && y <= box.bottom;
+    });
+    if (!target) continue;
+    const box = target.getBoundingClientRect();
+    const hit = pointRange(Math.max(box.left + 1, Math.min(goal.current, box.right - 1)), y);
+    if (hit && target.contains(hit.startContainer)) return extendTo([hit.startContainer, hit.startOffset]);
+    return extendTo(textPoint(target, dir > 0 ? 0 : target.textContent.length));
+  }
+  // no line further that way: run to the start or end of this one
+  return body ? extendTo(textPoint(body, dir > 0 ? body.textContent.length : 0)) : false;
+};
+
+// The live highlight in block terms: every body it touches, first to last.
+const selectionInfo = (root) => {
+  const sel = window.getSelection();
+  if (!root || !sel?.rangeCount || sel.isCollapsed) return null;
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.commonAncestorContainer)) return null;
+  const bodies = [...root.querySelectorAll("[data-block-id]")].filter((b) => range.intersectsNode(b));
+  if (!bodies.length) return null;
+  return { sel, range, bodies, startBody: bodies[0], endBody: bodies[bodies.length - 1] };
+};
+
+// ---------------------------------------------------------------------------
+// Typing shortcuts
+// ---------------------------------------------------------------------------
+
+// Typed as the whole content of a line, these turn it into another element, the
+// way Notion's markdown works. `keep` leaves what you typed in place (INT. stays
+// INT.); `from` limits the rule to lines that are already one of those elements.
 const PREFIXES = [
-  { test: /^(int|ext|est|int\.?\/ext|i\/e)\.?\s$/i, type: "scene", keep: true },
+  { test: /^(int|ext|est|int\.?\/ext|i\/e)\.?\s$/i, type: "scene", keep: true, from: ["action"] },
+  { test: /^###\s$/, type: "beat" },
   { test: /^##\s$/, type: "sequence" },
-  { test: /^#\s$/, type: "act" },
+  { test: /^#\s$/, type: "heading" },
+  { test: /^-#\s$/, type: "subtext" },
+  { test: /^=\s$/, type: "subtext" },
   { test: /^@$/, type: "character" },
-  { test: /^\($/, type: "parenthetical" },
+  { test: /^\($/, type: "parenthetical", from: ["action", "dialogue", "parenthetical"] },
   { test: /^><\s?$/, type: "centered" },
   { test: /^>\s$/, type: "transition" },
   { test: /^~$/, type: "lyrics" },
-  { test: /^=\s$/, type: "subtext" },
   { test: /^\[\[$/, type: "note" },
   { test: /^!!\s$/, type: "shot" },
-  { test: /^===$/, type: "pagebreak" },
+  { test: /^(===|---)$/, type: "pagebreak" },
 ];
 
-const slashMatches = (query) => {
-  if (!query) return TYPES;
-  const q = query.toLowerCase();
-  const scored = [];
-  for (const t of TYPES) {
-    const label = t.label.toLowerCase();
-    const words = t.words.split(/\s+/);
-    let score = -1;
-    if (label.startsWith(q)) score = 0;
-    else if (words.some((w) => w === q)) score = 1;
-    else if (words.some((w) => w.startsWith(q))) score = 2;
-    if (score >= 0) scored.push({ t, score });
+// **bold**, *italic*, _underline_ and ~~strike~~, applied as the closing mark is typed.
+const INLINE = [
+  { re: /\*\*([^*\n]+)\*\*$/, cmd: "bold", mark: 2 },
+  { re: /~~([^~\n]+)~~$/, cmd: "strikeThrough", mark: 2 },
+  { re: /(?:^|[^*\w])\*([^*\s][^*\n]*)\*$/, cmd: "italic", mark: 1 },
+  { re: /(?:^|[^_\w])_([^_\s][^_\n]*)_$/, cmd: "underline", mark: 1 },
+];
+
+const inlineMarkdown = (el) => {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (node?.nodeType !== 3 || !el.contains(node)) return false;
+  const offset = sel.anchorOffset;
+  const before = node.textContent.slice(0, offset);
+  for (const rule of INLINE) {
+    const m = rule.re.exec(before);
+    if (!m) continue;
+    const inner = m[1];
+    const start = offset - inner.length - rule.mark * 2;
+    const range = document.createRange();
+    // closing mark first, so the opening one's offsets still hold
+    range.setStart(node, offset - rule.mark);
+    range.setEnd(node, offset);
+    range.deleteContents();
+    range.setStart(node, start);
+    range.setEnd(node, start + rule.mark);
+    range.deleteContents();
+    range.setStart(node, start);
+    range.setEnd(node, start + inner.length);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    exec(rule.cmd);
+    sel.collapseToEnd();
+    // carry on typing in plain text, not inside the formatting
+    exec(rule.cmd);
+    return true;
   }
-  return scored.sort((a, b) => a.score - b.score).map((s) => s.t);
+  return false;
 };
 
+// ---------------------------------------------------------------------------
+// The slash menu: every element, then every colour, yours included.
+// ---------------------------------------------------------------------------
 const hotkeyLabel = (t) => `Ctrl+${t.hotkey}`;
+
+const slashItems = (customs, types) => [
+  ...types.map((t) => ({ ...t, kind: "type", hint: hotkeyLabel(t) })),
+  ...paletteOf(customs)
+    .filter((c) => c.hex)
+    .map((c) => ({
+      key: `color-${c.key}`,
+      kind: "color",
+      hex: c.hex,
+      label: c.name,
+      icon: "◆",
+      hint: c.custom ? "" : `Alt+${c.key}`,
+      words: `${c.name.toLowerCase()} colour color text${c.custom ? " custom" : ""}`,
+    })),
+  { key: "color-1", kind: "color", hex: null, label: "Default Colour", icon: "◇", hint: "Alt+1", words: "default colour color plain reset" },
+  { key: "color-new", kind: "newcolor", label: "New Colour…", icon: "+", hint: "", words: "new colour color custom add create make" },
+];
+
+// Matches the start of a word, ranked so a label match beats a keyword match.
+const slashMatches = (query, customs, types) => {
+  const items = slashItems(customs, types);
+  if (!query) return items;
+  const q = query.toLowerCase();
+  const scored = [];
+  for (const item of items) {
+    const label = item.label.toLowerCase();
+    const words = item.words.split(/\s+/);
+    let score = -1;
+    if (label === q) score = 0;
+    else if (label.startsWith(q)) score = 1;
+    else if (words.some((w) => w === q)) score = 2;
+    else if (words.some((w) => w.startsWith(q))) score = 3;
+    if (score >= 0) scored.push({ item, score });
+  }
+  return scored.sort((a, b) => a.score - b.score).map((s) => s.item);
+};
 
 // ---------------------------------------------------------------------------
 // One line of the script
 // ---------------------------------------------------------------------------
-const Block = memo(function Block({ block, number, selected, active, focusAt, lonely, dropMark, autocomplete, api }) {
+const Block = memo(function Block({ block, number, selected, active, focusAt, lonely, dropMark, autocomplete, color, api }) {
   const ref = useRef(null);
   const handleRef = useRef(null);
   const [slash, setSlash] = useState(null);
   const [sugOpen, setSugOpen] = useState(false);
   const [sugIndex, setSugIndex] = useState(0);
-  const type = TYPE_BY_KEY[block.type] || TYPE_BY_KEY.action;
+  const [making, setMaking] = useState(false);
+  // the script as it was before the / that opened the slash menu
+  const slashFrom = useRef(null);
+  const profile = api.profile();
+  const type = profile.byKey[block.type] || profile.byKey[profile.base];
 
   // The DOM is the source of truth while you type; state only pushes into it when
   // something else changed the block (undo, a split, a merge, a paste).
@@ -202,10 +417,21 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 
   const suggestions = useMemo(() => {
     if (!active || !sugOpen || !autocomplete || slash) return [];
-    return suggestionsFor(block.type, plainText(block.html), api.blocks(), block.id);
+    return suggestionsFor(block.type, plainText(block.html), api.blocks(), block.id, api.known());
   }, [active, sugOpen, autocomplete, slash, block.html, block.type, block.id, api]);
 
+  // The rest of the top suggestion, shown faintly after what you've typed so far.
+  const ghost = useMemo(() => {
+    if ((block.type !== "character" && block.type !== "act") || !suggestions.length) return null;
+    const typed = plainText(block.html).replace(/ /g, " ").replace(/^\s+/, "").toUpperCase();
+    const top = suggestions[sugIndex % suggestions.length].value;
+    return typed && top.startsWith(typed) ? top.slice(typed.length) : null;
+  }, [block.type, block.html, suggestions, sugIndex]);
+
+  // Typing is saved in bursts that undo together; a formatting change is a step of
+  // its own, so undo takes it off without taking the words with it.
   const save = () => ref.current && api.patch(block.id, { html: ref.current.innerHTML }, { typing: true });
+  const saveStep = () => ref.current && api.patch(block.id, { html: ref.current.innerHTML });
 
   const accept = (item) => {
     const el = ref.current;
@@ -220,38 +446,50 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
     setSugOpen(keepOpen);
   };
 
-  const pickSlash = (t) => {
+  const pickSlash = (item) => {
     const el = ref.current;
-    if (slash) deleteFromOffset(el, slash.start);
+    if (slash) deleteBetween(el, slash.start, caretOffset(el) ?? slash.start + 1 + slash.query.length);
     setSlash(null);
-    if (t.key === "pagebreak") {
-      api.insertPageBreak(block.id, el.innerHTML);
+    if (item.kind === "newcolor") {
+      setMaking(true);
       return;
     }
-    api.patch(block.id, { type: t.key, html: el.innerHTML });
+    const from = slashFrom.current;
+    if (item.kind === "color") {
+      api.patch(block.id, { color: item.hex, html: el.innerHTML }, { focus: caretOffset(el) ?? "end", from });
+      sfx.play("tap");
+      return;
+    }
+    if (item.key === "pagebreak") {
+      api.insertPageBreak(block.id, el.innerHTML, from);
+      return;
+    }
+    api.patch(block.id, { type: item.key, html: el.innerHTML }, { focus: caretOffset(el) ?? "end", from });
     setSugOpen(true);
   };
 
   const onInput = () => {
+    if (commandRunning) return;
     const el = ref.current;
     // an emptied contenteditable keeps a stray <br>, which hides the placeholder
     if (!el.textContent && el.innerHTML !== "") el.innerHTML = "";
     const text = el.textContent;
     const caret = caretOffset(el);
+    let formatted = false;
 
-    if (block.type === "action" && !slash) {
-      const rule = PREFIXES.find((r) => r.test.test(text));
+    if (!slash) {
+      const rule = PREFIXES.find((r) => r.test.test(text) && profile.byKey[r.type] && (!r.from || r.from.includes(block.type)));
       if (rule) {
+        el.innerHTML = "";
         if (rule.type === "pagebreak") {
-          el.innerHTML = "";
           api.insertPageBreak(block.id, "");
           return;
         }
-        if (!rule.keep) el.innerHTML = "";
         api.patch(block.id, { type: rule.type, html: rule.keep ? escapeHtml(text.toUpperCase()) : "" }, { focus: "end" });
         setSugOpen(true);
         return;
       }
+      formatted = inlineMarkdown(el);
     }
 
     let slashOpen = Boolean(slash);
@@ -264,6 +502,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         } else setSlash({ ...slash, query: raw, index: 0 });
       } else if (text[caret - 1] === "/" && (caret === 1 || /\s/.test(text[caret - 2]))) {
         setSlash({ start: caret - 1, query: "", index: 0 });
+        slashFrom.current = api.blocks();
         slashOpen = true;
       }
     }
@@ -272,7 +511,8 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       setSugOpen(true);
       setSugIndex(0);
     }
-    api.patch(block.id, { html: el.innerHTML }, { typing: true });
+    // **bold** turning bold is its own step: undo puts the marks back
+    api.patch(block.id, { html: el.innerHTML }, { typing: !formatted });
     api.typed();
   };
 
@@ -282,7 +522,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
     const key = e.key;
 
     if (slash) {
-      const matches = slashMatches(slash.query);
+      const matches = slashMatches(slash.query, api.customs(), profile.types);
       if (matches.length && (key === "ArrowDown" || key === "ArrowUp")) {
         e.preventDefault();
         setSlash((s) => ({ ...s, index: (s.index + (key === "ArrowDown" ? 1 : -1) + matches.length) % matches.length }));
@@ -299,13 +539,13 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       }
     }
 
-    if (suggestions.length && !mod) {
+    if (suggestions.length && !mod && !e.altKey) {
       if (key === "ArrowDown" || key === "ArrowUp") {
         e.preventDefault();
         setSugIndex((i) => (i + (key === "ArrowDown" ? 1 : -1) + suggestions.length) % suggestions.length);
         return;
       }
-      if (key === "Tab" && !e.shiftKey) {
+      if ((key === "Tab" && !e.shiftKey) || (key === "ArrowRight" && ghost && caretOffset(el) >= el.textContent.length)) {
         e.preventDefault();
         accept(suggestions[sugIndex % suggestions.length]);
         return;
@@ -315,6 +555,25 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         accept(suggestions[sugIndex % suggestions.length]);
       } else if (key === "Escape") {
         setSugOpen(false);
+        return;
+      }
+    }
+
+    if (e.altKey && !mod) {
+      const c = colorForKey(e);
+      if (c) {
+        e.preventDefault();
+        const sel = window.getSelection();
+        if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+          paintSelection(c.hex);
+          saveStep();
+        } else api.colorBlocks([block.id], c.hex);
+        sfx.play("tap");
+        return;
+      }
+      if (key === "ArrowUp" || key === "ArrowDown") {
+        e.preventDefault();
+        sfx.play(api.nudge([block.id], key === "ArrowUp" ? -1 : 1) ? "tap" : "error");
         return;
       }
     }
@@ -331,7 +590,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         api.redo();
         return;
       }
-      const hot = typeForHotkey(e);
+      const hot = profile.hotkey(e);
       if (hot) {
         e.preventDefault();
         if (hot === "pagebreak") api.insertPageBreak(block.id, el.innerHTML);
@@ -342,7 +601,18 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       if (!e.shiftKey && (k === "b" || k === "i" || k === "u")) {
         e.preventDefault();
         exec({ b: "bold", i: "italic", u: "underline" }[k]);
-        save();
+        saveStep();
+        return;
+      }
+      if (e.shiftKey && (k === "x" || k === "s")) {
+        e.preventDefault();
+        exec("strikeThrough");
+        saveStep();
+        return;
+      }
+      if (k === "d" && !e.shiftKey) {
+        e.preventDefault();
+        api.duplicate([block.id]);
         return;
       }
       if (k === "a") {
@@ -355,6 +625,23 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         return;
       }
       return;
+    }
+
+    // Shift+arrows carry a highlight out of this line and into the next ones.
+    if (e.shiftKey && !e.altKey) {
+      const dir = key === "ArrowUp" || key === "ArrowLeft" ? -1 : 1;
+      const edge =
+        key === "ArrowUp" || key === "ArrowDown"
+          ? atLineEdge(el, dir, focusRect())
+          : key === "ArrowLeft"
+          ? focusOffset(el) === 0
+          : key === "ArrowRight"
+          ? focusOffset(el) >= el.textContent.length
+          : false;
+      if (edge && api.extend(dir, key === "ArrowUp" || key === "ArrowDown" ? "line" : "character")) {
+        e.preventDefault();
+        return;
+      }
     }
 
     if (key === "Enter") {
@@ -390,13 +677,17 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 
     if ((key === "ArrowUp" || key === "ArrowDown") && !e.shiftKey && !e.altKey) {
       const dir = key === "ArrowUp" ? -1 : 1;
-      if (atLineEdge(el, dir)) {
+      const sel = window.getSelection();
+      if (sel.rangeCount && sel.getRangeAt(0).collapsed && atLineEdge(el, dir)) {
         const rect = caretRect();
         const x = rect ? rect.left : el.getBoundingClientRect().left;
         if (api.move(block.id, dir, x)) e.preventDefault();
       }
       return;
     }
+
+    // a held key repeats its keydown, but a real switch only clicks once
+    if ((key === "Backspace" || key === "Delete") && !e.repeat) sfx.type("backspace");
 
     if (key === "Backspace") {
       const sel = window.getSelection();
@@ -417,10 +708,19 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       return;
     }
 
-    if (key.length === 1) sfx.type("key");
+    if (e.repeat) return;
+    if (key === " ") sfx.type("space");
+    else if (key.length === 1) sfx.type("key");
+  };
+
+  const onKeyUp = (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === " " || e.key === "Enter" || e.key === "Backspace" || e.key === "Delete") sfx.type("bigUp");
+    else if (e.key.length === 1) sfx.type("keyUp");
   };
 
   const onPaste = (e) => {
+    if (api.docMode()) return;
     const text = e.clipboardData?.getData("text/plain") || "";
     e.preventDefault();
     if (!text) return;
@@ -428,7 +728,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       document.execCommand("insertText", false, text.replace(/\s+/g, " "));
       return;
     }
-    const { blocks } = parseFountain(text);
+    const blocks = profile.parse(text);
     if (!blocks.length) return;
     const el = ref.current;
     const sel = window.getSelection();
@@ -446,14 +746,15 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
   const onBlur = () => {
     setSugOpen(false);
     setSlash(null);
+    const el = ref.current;
     if (block.type === "parenthetical") {
-      const el = ref.current;
       const clean = stripParens(el.innerHTML);
       if (clean !== el.innerHTML.trim()) api.patch(block.id, { html: clean }, { typing: true });
     }
   };
 
-  const slashList = slash ? slashMatches(slash.query) : [];
+  const slashList = slash ? slashMatches(slash.query, api.customs(), profile.types) : [];
+  const firstColor = slashList.findIndex((t) => t.kind !== "type");
 
   return (
     <div
@@ -464,7 +765,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       data-active={active}
       data-drop={dropMark || undefined}
     >
-      <div className="block-gutter">
+      <div className="block-gutter" contentEditable={false}>
         <div
           ref={handleRef}
           className="block-handle"
@@ -481,6 +782,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       {block.type === "pagebreak" ? (
         <div
           className="pagebreak"
+          contentEditable={false}
           onMouseDown={(e) => {
             e.preventDefault();
             api.selectOnly(block.id);
@@ -495,11 +797,14 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
           contentEditable
           suppressContentEditableWarning
           spellCheck
+          style={color ? { color } : undefined}
           data-block-id={block.id}
           data-placeholder={type.placeholder}
           data-lonely={lonely || undefined}
+          data-ghost={ghost || undefined}
           onInput={onInput}
           onKeyDown={onKeyDown}
+          onKeyUp={onKeyUp}
           onPaste={onPaste}
           onFocus={() => {
             api.activate(block.id);
@@ -508,27 +813,51 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
           onBlur={onBlur}
         />
       )}
-      {number != null && <span className="scene-num scene-num-right">{number}</span>}
+      {number != null && (
+        <span className="scene-num scene-num-right" contentEditable={false}>
+          {number}
+        </span>
+      )}
 
       {slash && slashList.length > 0 && (
         <Popover anchorRef={ref} width={250} className="slash-menu" onClose={() => setSlash(null)}>
-          <span className="menu-label">Elements</span>
+          {firstColor !== 0 && <span className="menu-label">Elements</span>}
           {slashList.map((t, i) => (
-            <button
-              key={t.key}
-              className="menu-item"
-              data-on={i === slash.index % slashList.length}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                pickSlash(t);
-              }}
-            >
-              <span className="menu-icon">{t.icon}</span>
-              {t.label}
-              <span className="menu-hint">{hotkeyLabel(t)}</span>
-            </button>
+            <div key={t.key} style={{ display: "contents" }}>
+              {i === firstColor && <span className="menu-label">Colours</span>}
+              <button
+                className="menu-item"
+                data-on={i === slash.index % slashList.length}
+                ref={(node) => i === slash.index % slashList.length && node?.scrollIntoView({ block: "nearest" })}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pickSlash(t);
+                }}
+              >
+                <span className="menu-icon" style={t.kind === "color" && t.hex ? { color: t.hex } : undefined}>
+                  {t.icon}
+                </span>
+                {t.label}
+                {t.hint && <span className="menu-hint">{t.hint}</span>}
+              </button>
+            </div>
           ))}
         </Popover>
+      )}
+
+      {making && (
+        <NewColor
+          anchorRef={ref}
+          onClose={() => {
+            setMaking(false);
+            // the /new that opened this is gone from the line either way
+            api.patch(block.id, { html: ref.current.innerHTML }, { focus: "end", from: slashFrom.current });
+          }}
+          onCreate={(color) => {
+            setMaking(false);
+            api.patch(block.id, { color: color.hex, html: ref.current.innerHTML }, { focus: "end", from: slashFrom.current });
+          }}
+        />
       )}
 
       {suggestions.length > 0 && (
@@ -556,11 +885,17 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 // ---------------------------------------------------------------------------
 // Handle menu
 // ---------------------------------------------------------------------------
-function BlockMenu({ anchorRef, block, onPick, onInsert, onDuplicate, onDelete, onClose }) {
+function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, onDuplicate, onDelete, onClose }) {
   return (
     <Popover anchorRef={anchorRef} width={240} className="block-menu" onClose={onClose}>
+      {block.type !== "pagebreak" && (
+        <>
+          <span className="menu-label">Colour</span>
+          <Swatches value={block.color} onPick={onColor} />
+        </>
+      )}
       <span className="menu-label">Turn into</span>
-      {TYPES.filter((t) => t.key !== "pagebreak").map((t) => (
+      {types.filter((t) => t.key !== "pagebreak").map((t) => (
         <button key={t.key} className="menu-item" data-on={block.type === t.key} onClick={() => onPick(t.key)}>
           <span className="menu-icon">{t.icon}</span>
           {t.label}
@@ -568,17 +903,24 @@ function BlockMenu({ anchorRef, block, onPick, onInsert, onDuplicate, onDelete, 
         </button>
       ))}
       <div className="menu-sep" />
-      <button className="menu-item" onClick={() => onInsert(0)}>
-        <span className="menu-icon">↑</span>Insert Above
-      </button>
-      <button className="menu-item" onClick={() => onInsert(1)}>
-        <span className="menu-icon">↓</span>Insert Below
-      </button>
+      {count === 1 && (
+        <>
+          <button className="menu-item" onClick={() => onInsert(0)}>
+            <span className="menu-icon">↑</span>Insert Above
+          </button>
+          <button className="menu-item" onClick={() => onInsert(1)}>
+            <span className="menu-icon">↓</span>Insert Below
+          </button>
+        </>
+      )}
       <button className="menu-item" onClick={onDuplicate}>
-        <span className="menu-icon">⧉</span>Duplicate
+        <span className="menu-icon">⧉</span>
+        {count > 1 ? `Duplicate ${count}` : "Duplicate"}
+        <span className="menu-hint">Ctrl+D</span>
       </button>
       <button className="menu-item menu-danger" onClick={onDelete}>
-        <span className="menu-icon">×</span>Delete
+        <span className="menu-icon">×</span>
+        {count > 1 ? `Delete ${count}` : "Delete"}
         <span className="menu-hint">Del</span>
       </button>
     </Popover>
@@ -586,12 +928,154 @@ function BlockMenu({ anchorRef, block, onPick, onInsert, onDuplicate, onDelete, 
 }
 
 // ---------------------------------------------------------------------------
+// The floating bar over highlighted text: inline marks and colours.
+// ---------------------------------------------------------------------------
+function SelectionBar({ rootRef, customs, onApplied }) {
+  const [rect, setRect] = useState(null);
+  const [pos, setPos] = useState(null);
+  const [making, setMaking] = useState(false);
+  const barRef = useRef(null);
+  const addRef = useRef(null);
+  // While a new colour is being named the highlight is parked here, because typing
+  // the name moves the selection into the name field.
+  const parked = useRef(null);
+
+  useEffect(() => {
+    const update = () => {
+      if (parked.current) return;
+      const info = selectionInfo(rootRef.current);
+      setRect(info && info.sel.toString().trim() ? info.range.getBoundingClientRect() : null);
+    };
+    const later = () => setTimeout(update, 0);
+    const onChange = () => {
+      if (parked.current) return;
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) setRect(null);
+    };
+    document.addEventListener("mouseup", later);
+    document.addEventListener("keyup", later);
+    document.addEventListener("selectionchange", onChange);
+    window.addEventListener("scroll", onChange, true);
+    return () => {
+      document.removeEventListener("mouseup", later);
+      document.removeEventListener("keyup", later);
+      document.removeEventListener("selectionchange", onChange);
+      window.removeEventListener("scroll", onChange, true);
+    };
+  }, [rootRef]);
+
+  useLayoutEffect(() => {
+    if (!rect || !barRef.current) {
+      setPos(null);
+      return;
+    }
+    const bar = barRef.current.getBoundingClientRect();
+    const pad = 10;
+    const left = Math.max(pad, Math.min(rect.left + rect.width / 2 - bar.width / 2, window.innerWidth - bar.width - pad));
+    const above = rect.top - bar.height - 9;
+    const z = uiZoom();
+    setPos({ left: left / z, top: (above >= 70 ? above : rect.bottom + 9) / z });
+  }, [rect]);
+
+  if (!rect) return null;
+  const run = (fn) => (e) => {
+    e.preventDefault();
+    fn();
+    onApplied();
+    sfx.play("tap");
+  };
+
+  return createPortal(
+    <div
+      ref={barRef}
+      className="selbar"
+      style={{ left: pos?.left ?? 0, top: pos?.top ?? 0, visibility: pos ? "visible" : "hidden" }}
+      // keeps the highlight when a button is pressed; the new-colour form (which
+      // bubbles here through its portal) needs its fields to take focus
+      onMouseDown={(e) => barRef.current?.contains(e.target) && e.preventDefault()}
+    >
+      <button className="selbar-btn" onMouseDown={run(() => exec("bold"))} title="Bold · Ctrl+B">
+        <b>B</b>
+      </button>
+      <button className="selbar-btn" onMouseDown={run(() => exec("italic"))} title="Italic · Ctrl+I">
+        <i>I</i>
+      </button>
+      <button className="selbar-btn" onMouseDown={run(() => exec("underline"))} title="Underline · Ctrl+U">
+        <u>U</u>
+      </button>
+      <button className="selbar-btn" onMouseDown={run(() => exec("strikeThrough"))} title="Strikethrough · Ctrl+Shift+X">
+        <s>S</s>
+      </button>
+      <span className="selbar-sep" />
+      {paletteOf(customs)
+        .filter((c) => c.hex)
+        .map((c) => (
+          <button
+            key={c.key}
+            className="selbar-dot"
+            style={{ background: c.hex }}
+            title={c.custom ? c.name : `${c.name} · Alt+${c.key}`}
+            onMouseDown={run(() => paintSelection(c.hex))}
+          />
+        ))}
+      <button className="selbar-dot selbar-dot-clear" title="Default colour · Alt+1" onMouseDown={run(() => paintSelection(null))}>
+        ×
+      </button>
+      <button
+        ref={addRef}
+        className="selbar-dot selbar-dot-clear"
+        title="New colour"
+        onMouseDown={(e) => {
+          e.preventDefault();
+          const sel = window.getSelection();
+          if (!sel?.rangeCount) return;
+          parked.current = { range: sel.getRangeAt(0).cloneRange(), spans: rootRef.current?.dataset.docMode === "on" };
+          setMaking(true);
+        }}
+      >
+        +
+      </button>
+      {making && (
+        <NewColor
+          anchorRef={addRef}
+          onClose={() => {
+            parked.current = null;
+            setMaking(false);
+            setRect(null);
+          }}
+          onCreate={(color) => {
+            const { range, spans } = parked.current || {};
+            parked.current = null;
+            setMaking(false);
+            if (!range) return;
+            // put the highlight back exactly as it was, then colour it
+            if (spans) {
+              enterDocMode(rootRef.current);
+              rootRef.current.focus({ preventScroll: true });
+            } else bodyOf(range.startContainer)?.focus({ preventScroll: true });
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(range);
+            paintSelection(color.hex);
+            onApplied();
+          }}
+        />
+      )}
+    </div>,
+    document.body
+  );
+}
+
+// ---------------------------------------------------------------------------
 // The editor
 // ---------------------------------------------------------------------------
 const HISTORY_LIMIT = 300;
+const SPEAKING = new Set(["dialogue", "parenthetical", "subtext", "lyrics"]);
 
-const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActive, settings, jump }, outerRef) {
+const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActive, settings, jump, cast, known, profile = SCRIPT_PROFILE }, outerRef) {
   const rootRef = useRef(null);
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
   const onChangeRef = useRef(onChange);
@@ -600,6 +1084,8 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   onActiveRef.current = onActive;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  const knownRef = useRef(known || []);
+  knownRef.current = known || [];
 
   const [focusReq, setFocusReq] = useState(null);
   const [activeId, setActiveId] = useState(null);
@@ -609,6 +1095,10 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   const anchorRef = useRef(null);
   const [menu, setMenu] = useState(null);
   const [drop, setDrop] = useState(null);
+  const [marquee, setMarquee] = useState(null);
+  const goalX = useRef(null);
+  const mouseDown = useRef(false);
+  const boxDragged = useRef(false);
   const hist = useRef({ past: [], future: [], lastKind: null, lastAt: 0, lastId: null });
 
   const focusSnapshot = () => {
@@ -618,17 +1108,29 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     return { id, at: caretOffset(el) };
   };
 
-  const indexOf = (id) => blocksRef.current.findIndex((b) => b.id === id);
-
-  // Every change goes through here, so every change can be undone.
-  const commit = useCallback((next, { focus, typing = false, id = null } = {}) => {
+  // Every change goes through here, so every change can be undone. `from` names an
+  // earlier state as the one undo returns to: a slash command undoes back to the
+  // line as it was before the / was typed, not to the half-typed command.
+  const commit = useCallback((next, { focus, typing = false, id = null, from = null } = {}) => {
     const h = hist.current;
     const now = Date.now();
-    const coalesce = typing && h.lastKind === "typing" && h.lastId === id && now - h.lastAt < 1200;
-    if (!coalesce) {
-      h.past.push({ blocks: blocksRef.current, focus: focusSnapshot() });
-      if (h.past.length > HISTORY_LIMIT) h.past.shift();
+    // nothing actually changed: no empty step for undo to waste a press on
+    const cur = blocksRef.current;
+    const same =
+      !from &&
+      next.length === cur.length &&
+      next.every((b, i) => b === cur[i] || (b.id === cur[i].id && b.type === cur[i].type && b.html === cur[i].html && (b.color || null) === (cur[i].color || null)));
+    if (same) {
+      if (focus) setFocusReq({ ...focus, t: now + Math.random() });
+      return;
     }
+    const coalesce = typing && h.lastKind === "typing" && h.lastId === id && now - h.lastAt < 1200;
+    if (from) {
+      if (h.past[h.past.length - 1]?.blocks !== from) h.past.push({ blocks: from, focus: focusSnapshot() });
+    } else if (!coalesce) {
+      h.past.push({ blocks: blocksRef.current, focus: focusSnapshot() });
+    }
+    if (h.past.length > HISTORY_LIMIT) h.past.shift();
     h.future = [];
     h.lastKind = typing ? "typing" : "edit";
     h.lastAt = now;
@@ -644,6 +1146,14 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     if (selectedRef.current.size) setSelected(new Set());
   }, []);
 
+  // Let go of a cross-block highlight completely: the range and the editing host.
+  const dropHighlight = () => {
+    const root = rootRef.current;
+    const sel = window.getSelection();
+    if (sel?.anchorNode && root?.contains(sel.anchorNode)) sel.removeAllRanges();
+    exitDocMode(root);
+  };
+
   const applyHistory = (from, to) => {
     const h = hist.current;
     if (!h[from].length) {
@@ -653,6 +1163,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     // Snapshot the caret, then let go of the block before touching the stacks: a
     // blur can tidy a parenthetical, and that commit must land before we pop.
     const focus = focusSnapshot();
+    dropHighlight();
     document.activeElement?.blur?.();
     if (!h[from].length) return;
     const entry = h[from].pop();
@@ -670,16 +1181,107 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     const list = blocksRef.current;
     const first = list.findIndex((b) => ids.has(b.id));
     let next = list.filter((b) => !ids.has(b.id));
-    if (!next.length) next = [emptyBlock("scene")];
+    if (!next.length) next = profileRef.current.starter();
     const neighbour = next[Math.min(Math.max(0, first - 1), next.length - 1)];
     commit(next, { focus: neighbour.type === "pagebreak" ? null : { id: neighbour.id, at: "end" } });
     setSelected(new Set());
     sfx.play("remove");
   };
 
+  // The ids a highlight touches, in script order.
+  const touchedIds = () => selectionInfo(rootRef.current)?.bodies.map((b) => b.dataset.blockId) || [];
+
+  // After a formatting command ran over highlighted text, read the blocks back.
+  const syncFromDom = () => {
+    const root = rootRef.current;
+    if (!root) return;
+    const els = {};
+    root.querySelectorAll("[data-block-id]").forEach((el) => {
+      els[el.dataset.blockId] = el;
+    });
+    let changed = false;
+    const next = blocksRef.current.map((b) => {
+      const el = els[b.id];
+      if (!el || el.innerHTML === b.html) return b;
+      changed = true;
+      return { ...b, html: el.innerHTML };
+    });
+    if (changed) commit(next);
+  };
+
+  // Types over (or deletes, or pastes over) a highlight that may span blocks: the
+  // first block keeps what came before it, the last gives up what came after it,
+  // and everything in between goes.
+  const replaceHighlight = (text = "") => {
+    const root = rootRef.current;
+    const info = selectionInfo(root);
+    if (!info) return false;
+    const { range, startBody, endBody } = info;
+    const list = blocksRef.current;
+    const from = list.findIndex((b) => b.id === startBody.dataset.blockId);
+    const to = list.findIndex((b) => b.id === endBody.dataset.blockId);
+    if (from < 0 || to < 0) return false;
+
+    const head = document.createRange();
+    head.setStart(startBody, 0);
+    if (startBody.contains(range.startContainer)) head.setEnd(range.startContainer, range.startOffset);
+    else head.setEnd(startBody, 0);
+    const tail = document.createRange();
+    tail.setEnd(endBody, endBody.childNodes.length);
+    if (endBody.contains(range.endContainer)) tail.setStart(range.endContainer, range.endOffset);
+    else tail.setStart(endBody, endBody.childNodes.length);
+    const headHtml = rangeHtml(head);
+    const tailHtml = rangeHtml(tail);
+    const start = list[from];
+    const clean = String(text).replace(/\r\n?/g, "\n");
+
+    let next;
+    let focus;
+    if (/\n/.test(clean.trim())) {
+      const parsed = profileRef.current.parse(clean);
+      const keepHead = textOf(headHtml) ? [{ ...start, html: headHtml }] : [];
+      const keepTail = textOf(tailHtml) ? [emptyBlock(list[to].type, tailHtml)] : [];
+      next = [...list.slice(0, from), ...keepHead, ...parsed, ...keepTail, ...list.slice(to + 1)];
+      const last = parsed[parsed.length - 1];
+      focus = last && last.type !== "pagebreak" ? { id: last.id, at: "end" } : null;
+    } else {
+      const flat = clean.replace(/\s+/g, " ");
+      next = [...list.slice(0, from), { ...start, html: headHtml + escapeHtml(flat) + tailHtml }, ...list.slice(to + 1)];
+      focus = { id: start.id, at: htmlLength(headHtml) + flat.length };
+    }
+    if (!next.length) next = profileRef.current.starter();
+    dropHighlight();
+    commit(next, { focus });
+    return true;
+  };
+
+  // A highlight as text for the clipboard: Fountain when it spans elements, so a
+  // paste back in comes out as the same elements.
+  const highlightText = () => {
+    const info = selectionInfo(rootRef.current);
+    if (!info) return "";
+    const { range, bodies, startBody, endBody } = info;
+    const picked = bodies
+      .map((body) => {
+        const block = blocksRef.current.find((b) => b.id === body.dataset.blockId);
+        const r = document.createRange();
+        r.selectNodeContents(body);
+        if (body === startBody && body.contains(range.startContainer)) r.setStart(range.startContainer, range.startOffset);
+        if (body === endBody && body.contains(range.endContainer)) r.setEnd(range.endContainer, range.endOffset);
+        return block && { ...block, html: rangeHtml(r) };
+      })
+      .filter((b) => b && textOf(b.html));
+    if (picked.length <= 1) return picked.length ? plainText(picked[0].html) : "";
+    return profileRef.current.toText(picked);
+  };
+
   const api = useMemo(
     () => ({
       blocks: () => blocksRef.current,
+      known: () => knownRef.current,
+      profile: () => profileRef.current,
+      customs: () => settingsRef.current.customColors || [],
+      docMode: () => rootRef.current?.dataset.docMode === "on",
       focused: () => setFocusReq(null),
       activate: (id) => {
         setActiveId(id);
@@ -701,27 +1303,99 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           el.scrollIntoView({ block: settingsRef.current.typewriterScroll ? "center" : "nearest", behavior: "smooth" });
         }
       },
-      patch: (id, changes, { typing = false, focus } = {}) => {
+      patch: (id, changes, { typing = false, focus, from } = {}) => {
         const list = blocksRef.current;
         const i = list.findIndex((b) => b.id === id);
         if (i < 0) return;
         commit(replaceAt(list, i, { ...list[i], ...changes }), {
           typing,
           id,
-          focus: focus ? { id, at: focus } : undefined,
+          focus: focus != null ? { id, at: focus } : undefined,
+          from,
         });
       },
       setType: (id, type) => {
         const ids = selectedRef.current.size ? selectedRef.current : new Set([id]);
         commit(blocksRef.current.map((b) => (ids.has(b.id) && b.type !== "pagebreak" ? { ...b, type } : b)));
       },
+      setTypeMany: (ids, type) => {
+        const set = new Set(ids);
+        commit(blocksRef.current.map((b) => (set.has(b.id) && b.type !== "pagebreak" ? { ...b, type } : b)));
+      },
+      colorBlocks: (ids, hex) => {
+        const set = new Set(ids);
+        const el = document.activeElement;
+        const focus = el?.dataset?.blockId && set.has(el.dataset.blockId) ? { id: el.dataset.blockId, at: caretOffset(el) ?? "end" } : undefined;
+        commit(
+          blocksRef.current.map((b) => (set.has(b.id) && b.type !== "pagebreak" ? { ...b, color: hex || null } : b)),
+          { focus }
+        );
+      },
+      // Alt+Up/Down: everything chosen moves one place, past whatever sits next to it.
+      nudge: (ids, dir) => {
+        const list = blocksRef.current.slice();
+        const moving = new Set(ids);
+        let moved = false;
+        if (dir < 0) {
+          for (let i = 1; i < list.length; i++) {
+            if (moving.has(list[i].id) && !moving.has(list[i - 1].id)) {
+              [list[i - 1], list[i]] = [list[i], list[i - 1]];
+              moved = true;
+            }
+          }
+        } else {
+          for (let i = list.length - 2; i >= 0; i--) {
+            if (moving.has(list[i].id) && !moving.has(list[i + 1].id)) {
+              [list[i + 1], list[i]] = [list[i], list[i + 1]];
+              moved = true;
+            }
+          }
+        }
+        if (!moved) return false;
+        // moving a focused node through the DOM drops its focus, so put it back
+        const el = document.activeElement;
+        const focus = el?.dataset?.blockId && moving.has(el.dataset.blockId) ? { id: el.dataset.blockId, at: caretOffset(el) ?? "end" } : undefined;
+        commit(list, { focus });
+        return true;
+      },
+      duplicate: (ids) => {
+        const set = new Set(ids);
+        const list = blocksRef.current;
+        const last = list.reduce((at, b, i) => (set.has(b.id) ? i : at), -1);
+        if (last < 0) return;
+        const copies = list.filter((b) => set.has(b.id)).map((b) => ({ ...b, id: uid() }));
+        const next = [...list.slice(0, last + 1), ...copies, ...list.slice(last + 1)];
+        const single = copies.length === 1 && copies[0].type !== "pagebreak";
+        commit(next, { focus: single ? { id: copies[0].id, at: "end" } : undefined });
+        if (!single) {
+          setSelected(new Set(copies.map((b) => b.id)));
+          rootRef.current?.focus({ preventScroll: true });
+        }
+        sfx.play("add");
+      },
       cycle: (id, dir) => {
         const list = blocksRef.current;
         const i = list.findIndex((b) => b.id === id);
         if (i < 0) return;
-        const pos = TAB_ORDER.indexOf(list[i].type);
-        const type = TAB_ORDER[(Math.max(0, pos) + dir + TAB_ORDER.length) % TAB_ORDER.length];
+        const order = profileRef.current.tabOrder;
+        const pos = order.indexOf(list[i].type);
+        const type = order[(Math.max(0, pos) + dir + order.length) % order.length];
         commit(replaceAt(list, i, { ...list[i], type }));
+      },
+      // Shift+arrow at the edge of a line: hand the highlight to the editor so it
+      // can keep growing into the lines around it.
+      extend: (dir, granularity) => {
+        const root = rootRef.current;
+        const sel = window.getSelection();
+        if (!root || !sel.anchorNode) return false;
+        const a = [sel.anchorNode, sel.anchorOffset];
+        const f = [sel.focusNode, sel.focusOffset];
+        enterDocMode(root);
+        root.focus({ preventScroll: true });
+        sel.setBaseAndExtent(...a, ...f);
+        goalX.current = null;
+        stepHighlight(root, dir, granularity, goalX);
+        return true;
       },
       enter: (id, beforeHtml, afterHtml) => {
         const list = blocksRef.current;
@@ -730,17 +1404,18 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         const b = list[i];
         const beforeText = textOf(beforeHtml);
         const afterText = textOf(afterHtml);
+        const { screenplay, base, next: following } = profileRef.current;
 
         // Enter on an empty line changes what it is rather than piling up blanks:
         // an empty Character becomes Action, an empty Action becomes Character.
-        if (!beforeText && !afterText) {
+        if (screenplay && !beforeText && !afterText) {
           const type = b.type === "action" ? "character" : "action";
           commit(replaceAt(list, i, { ...b, type, html: "" }), { focus: { id: b.id, at: "start" } });
           return;
         }
         // Enter at the very start pushes the line down and leaves a fresh one above.
         if (!beforeText) {
-          const above = emptyBlock(b.type === "scene" ? "scene" : "action");
+          const above = emptyBlock(screenplay && b.type === "scene" ? "scene" : base);
           commit([...list.slice(0, i), above, { ...b, html: afterHtml }, ...list.slice(i + 1)], {
             focus: { id: b.id, at: "start" },
           });
@@ -750,12 +1425,12 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         let type = b.type;
         let html = beforeHtml;
         // "cut to:" / "SMASH CUT TO:" on its own line is a transition, however it was typed
-        if (type === "action" && !afterText && beforeText.length <= 30 && /^[\p{L} .'-]+ to:$/iu.test(beforeText)) {
+        if (screenplay && type === "action" && !afterText && beforeText.length <= 30 && /^[\p{L} .'-]+ to:$/iu.test(beforeText)) {
           type = "transition";
           html = escapeHtml(beforeText.toUpperCase());
         }
         if (type === "parenthetical") html = stripParens(html);
-        const nb = emptyBlock(afterText ? type : NEXT[type] || "action", afterHtml);
+        const nb = emptyBlock(afterText ? type : following[type] || base, afterHtml);
         commit([...list.slice(0, i), { ...b, type, html }, nb, ...list.slice(i + 1)], {
           focus: { id: nb.id, at: "start" },
         });
@@ -765,9 +1440,10 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         const i = list.findIndex((b) => b.id === id);
         if (i < 0) return;
         const b = list[i];
+        const base = profileRef.current.base;
         if (!textOf(html)) {
           if (list.length === 1) {
-            if (b.type !== "action") commit(replaceAt(list, i, { ...b, type: "action", html: "" }), { focus: { id, at: "start" } });
+            if (b.type !== base) commit(replaceAt(list, i, { ...b, type: base, html: "" }), { focus: { id, at: "start" } });
             return;
           }
           const next = list.filter((x) => x.id !== id);
@@ -777,8 +1453,8 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           commit(next, { focus: target ? { id: target.id, at: j >= 0 ? "end" : "start" } : null });
           return;
         }
-        if (b.type !== "action") {
-          commit(replaceAt(list, i, { ...b, type: "action", html }), { focus: { id, at: "start" } });
+        if (b.type !== base) {
+          commit(replaceAt(list, i, { ...b, type: base, html }), { focus: { id, at: "start" } });
           return;
         }
         if (i === 0) return;
@@ -787,7 +1463,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           commit(list.filter((x) => x.id !== prev.id), { focus: { id, at: "start" } });
           return;
         }
-        const join = plainText(prev.html).length;
+        const join = htmlLength(prev.html);
         commit([...list.slice(0, i - 1), { ...prev, html: prev.html + html }, ...list.slice(i + 1)], {
           focus: { id: prev.id, at: join },
         });
@@ -797,7 +1473,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         const i = list.findIndex((b) => b.id === id);
         const next = list[i + 1];
         if (i < 0 || !next) return;
-        const join = plainText(html).length;
+        const join = htmlLength(html);
         if (next.type === "pagebreak") {
           commit(list.filter((x) => x.id !== next.id), { focus: { id, at: join } });
           return;
@@ -814,14 +1490,14 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         setFocusReq({ id: list[j].id, at: { x, edge: dir < 0 ? "bottom" : "top" }, t: Date.now() });
         return true;
       },
-      insertPageBreak: (id, html) => {
+      insertPageBreak: (id, html, from) => {
         const list = blocksRef.current;
         const i = list.findIndex((b) => b.id === id);
         if (i < 0) return;
         const brk = emptyBlock("pagebreak");
         const after = emptyBlock("scene");
         const keep = textOf(html) ? [{ ...list[i], html }] : [];
-        commit([...list.slice(0, i), ...keep, brk, after, ...list.slice(i + 1)], { focus: { id: after.id, at: "start" } });
+        commit([...list.slice(0, i), ...keep, brk, after, ...list.slice(i + 1)], { focus: { id: after.id, at: "start" }, from });
       },
       paste: (id, beforeHtml, afterHtml, parsed) => {
         const list = blocksRef.current;
@@ -918,6 +1594,10 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     outerRef,
     () => ({
       setType: (type) => {
+        if (api.docMode()) {
+          if (type !== "pagebreak") api.setTypeMany(touchedIds(), type);
+          return;
+        }
         const id = activeId;
         if (!id && !selectedRef.current.size) return;
         const el = id ? rootRef.current?.querySelector(`[data-block-id="${id}"]`) : null;
@@ -933,8 +1613,12 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       },
       format: (cmd) => {
         exec(cmd);
+        if (api.docMode()) {
+          syncFromDom();
+          return;
+        }
         const el = document.activeElement;
-        if (el?.dataset?.blockId) api.patch(el.dataset.blockId, { html: el.innerHTML }, { typing: true });
+        if (el?.dataset?.blockId) api.patch(el.dataset.blockId, { html: el.innerHTML });
       },
       undo: api.undo,
       redo: api.redo,
@@ -948,32 +1632,301 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     if (list.length === 1 && !textOf(list[0].html)) setFocusReq({ id: list[0].id, at: "start", t: Date.now() });
   }, []);
 
+  // Undo and redo reach the editor wherever focus is: after a handle drag, a menu
+  // action or a click in the margin nothing is focused at all, and Ctrl+Z still has
+  // to take that last change back. Text fields elsewhere (the title, a dialog) keep
+  // their own undo.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.defaultPrevented || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k !== "z" && k !== "y") return;
+      const root = rootRef.current;
+      if (!root || root.contains(e.target)) return;
+      if (e.target.closest?.("input, textarea, select, [contenteditable='true']") || document.querySelector(".overlay")) return;
+      e.preventDefault();
+      if (k === "y" || e.shiftKey) api.redo();
+      else api.undo();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [api]);
+
   // Clicking a scene in the sidebar.
   useEffect(() => {
     if (!jump) return;
     if (blocksRef.current.some((b) => b.id === jump.id)) setFocusReq({ id: jump.id, at: "end", scroll: true, t: Date.now() });
   }, [jump]);
 
-  // Keys while whole blocks are selected (Ctrl+A twice, Shift+click on handles).
-  const onRootKeyDown = (e) => {
-    if (!selectedRef.current.size || e.target !== rootRef.current) return;
+  // When a cross-block highlight collapses (a click, an arrow key), the editor
+  // hands editing back to the block the caret landed in.
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const root = rootRef.current;
+      // mid-drag the browser briefly collapses the range; the drag itself decides
+      if (!root || root.dataset.docMode !== "on" || mouseDown.current) return;
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed && root.contains(sel.anchorNode)) return;
+      const node = sel?.anchorNode;
+      const offset = sel?.anchorOffset ?? 0;
+      const body = bodyOf(node);
+      exitDocMode(root);
+      if (body && root.contains(body)) {
+        body.focus({ preventScroll: true });
+        const range = document.createRange();
+        range.setStart(node, Math.min(offset, node.nodeType === 3 ? node.length : node.childNodes.length));
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, []);
+
+  // While the editor is the editing host, every edit goes through replaceHighlight
+  // so the blocks stay blocks.
+  useEffect(() => {
+    const root = rootRef.current;
+    const onBeforeInput = (e) => {
+      if (root.dataset.docMode !== "on") return;
+      e.preventDefault();
+      const t = e.inputType || "";
+      if (t === "insertText" || t === "insertReplacementText") replaceHighlight(e.data || e.dataTransfer?.getData("text/plain") || "");
+      else if (t.startsWith("delete") && t !== "deleteByDrag") replaceHighlight("");
+      else if (t === "insertParagraph" || t === "insertLineBreak") replaceHighlight("");
+    };
+    root.addEventListener("beforeinput", onBeforeInput);
+    return () => root.removeEventListener("beforeinput", onBeforeInput);
+  }, []);
+
+  // Mouse: a drag that leaves the block it started in keeps highlighting text
+  // across the lines it passes; a drag that starts anywhere around the text draws a
+  // box that selects whole elements.
+  useEffect(() => {
+    const onDown = (e) => {
+      const root = rootRef.current;
+      if (e.button !== 0 || !root) return;
+      if (e.target.closest?.(".popover, .selbar, .overlay, .block-handle, .format-bar")) return;
+
+      const body = e.target.closest?.(".block-body");
+      if (body && root.contains(body)) {
+        if (selectedRef.current.size) setSelected(new Set());
+        const anchor = pointRange(e.clientX, e.clientY);
+        if (!anchor) return;
+        const startBody = root.dataset.docMode === "on" ? null : body;
+        mouseDown.current = true;
+        const onMove = (ev) => {
+          const focus = pointRange(ev.clientX, ev.clientY);
+          const focusBody = focus && bodyOf(focus.startContainer);
+          if (!focusBody || !root.contains(focusBody)) return;
+          if (focusBody === startBody && root.dataset.docMode !== "on") return;
+          ev.preventDefault();
+          enterDocMode(root);
+          window.getSelection()?.setBaseAndExtent(anchor.startContainer, anchor.startOffset, focus.startContainer, focus.startOffset);
+        };
+        // once the editor is drawing the highlight, the browser's own drag
+        // selection (still tied to the block it started in) must stay out of it
+        const onMouseMove = (ev) => {
+          if (root.dataset.docMode === "on") ev.preventDefault();
+        };
+        const onUp = () => {
+          mouseDown.current = false;
+          window.removeEventListener("pointermove", onMove);
+          window.removeEventListener("mousemove", onMouseMove, true);
+          window.removeEventListener("pointerup", onUp);
+          window.removeEventListener("mouseup", onUp);
+          window.removeEventListener("pointercancel", onUp);
+          // a drag that came back to where it started leaves nothing highlighted
+          const sel = window.getSelection();
+          if (root.dataset.docMode === "on" && (!sel || sel.isCollapsed)) document.dispatchEvent(new Event("selectionchange"));
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("mousemove", onMouseMove, true);
+        window.addEventListener("pointerup", onUp);
+        window.addEventListener("mouseup", onUp);
+        window.addEventListener("pointercancel", onUp);
+        return;
+      }
+
+      // anywhere around the text: the page's margins and the space beside the page
+      const page = e.target.closest?.(".script-main");
+      if (!page || e.target.closest(".pagebreak, button, input, textarea")) {
+        if (selectedRef.current.size && !e.shiftKey) setSelected(new Set());
+        return;
+      }
+
+      // the selection box
+      e.preventDefault();
+      dropHighlight();
+      document.activeElement?.blur?.();
+      const start = { x: e.clientX + window.scrollX, y: e.clientY + window.scrollY };
+      const base = e.shiftKey ? [...selectedRef.current] : [];
+      let last = { x: e.clientX, y: e.clientY };
+      let moved = false;
+      if (!e.shiftKey) setSelected(new Set());
+      document.body.classList.add("is-marquee");
+
+      const recompute = () => {
+        const z = uiZoom();
+        const nowX = last.x + window.scrollX;
+        const nowY = last.y + window.scrollY;
+        const top = Math.min(start.y, nowY);
+        const bottom = Math.max(start.y, nowY);
+        const left = Math.min(start.x, nowX);
+        const right = Math.max(start.x, nowX);
+        if (!moved && bottom - top < 4 && right - left < 4) return;
+        moved = true;
+        const rect = root.getBoundingClientRect();
+        setMarquee({
+          left: (left - rect.left - window.scrollX) / z,
+          top: (top - rect.top - window.scrollY) / z,
+          width: (right - left) / z,
+          height: (bottom - top) / z,
+        });
+        const hits = [];
+        root.querySelectorAll(":scope > .block").forEach((el) => {
+          const r = el.getBoundingClientRect();
+          const t = r.top + window.scrollY;
+          const b = r.bottom + window.scrollY;
+          if (b > top && t < bottom) hits.push(el.dataset.rowId);
+        });
+        setSelected(new Set([...base.filter((id) => !hits.includes(id)), ...hits.filter((id) => !base.includes(id))]));
+      };
+      const onMove = (ev) => {
+        last = { x: ev.clientX, y: ev.clientY };
+        recompute();
+      };
+      const onScroll = () => recompute();
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        window.removeEventListener("scroll", onScroll, true);
+        document.body.classList.remove("is-marquee");
+        setMarquee(null);
+        if (moved) {
+          // the drag may end on the space below the script, which would otherwise
+          // read it as a click and add a line
+          boxDragged.current = true;
+          setTimeout(() => (boxDragged.current = false), 0);
+          rootRef.current?.focus({ preventScroll: true });
+        }
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+      window.addEventListener("scroll", onScroll, true);
+    };
+    window.addEventListener("pointerdown", onDown);
+    return () => window.removeEventListener("pointerdown", onDown);
+  }, []);
+
+  // Keys while a highlight spans blocks (the editor itself has focus then).
+  const onHighlightKeyDown = (e) => {
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
+    if (e.key === "Escape") {
+      window.getSelection()?.collapseToStart();
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      return;
+    }
+    if (e.shiftKey && !mod && !e.altKey && e.key.startsWith("Arrow")) {
+      e.preventDefault();
+      const dir = e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : 1;
+      stepHighlight(rootRef.current, dir, e.key === "ArrowUp" || e.key === "ArrowDown" ? "line" : "character", goalX);
+      return;
+    }
+    if (e.altKey && !mod) {
+      const c = colorForKey(e);
+      if (c) {
+        e.preventDefault();
+        paintSelection(c.hex);
+        syncFromDom();
+        sfx.play("tap");
+        return;
+      }
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        const ids = touchedIds();
+        dropHighlight();
+        if (api.nudge(ids, e.key === "ArrowUp" ? -1 : 1)) {
+          setSelected(new Set(ids));
+          rootRef.current?.focus({ preventScroll: true });
+          sfx.play("tap");
+        } else sfx.play("error");
+      }
+      return;
+    }
+    if (!mod) return;
+    if (k === "z" || k === "y") {
+      e.preventDefault();
+      if (k === "y" || e.shiftKey) api.redo();
+      else api.undo();
+      return;
+    }
+    const mark = e.shiftKey ? (k === "x" || k === "s" ? "strikeThrough" : null) : { b: "bold", i: "italic", u: "underline" }[k];
+    if (mark) {
+      e.preventDefault();
+      exec(mark);
+      syncFromDom();
+      return;
+    }
+    const hot = profileRef.current.hotkey(e);
+    if (hot) {
+      e.preventDefault();
+      if (hot !== "pagebreak") api.setTypeMany(touchedIds(), hot);
+      return;
+    }
+    if (k === "d") {
+      e.preventDefault();
+      const ids = touchedIds();
+      dropHighlight();
+      api.duplicate(ids);
+    }
+  };
+
+  // Keys while whole blocks are selected (Ctrl+A twice, the selection box,
+  // Shift+click on handles).
+  const onSelectionKeyDown = (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    const k = e.key.toLowerCase();
+    const ids = selectedRef.current;
     if (e.key === "Backspace" || e.key === "Delete") {
       e.preventDefault();
-      removeIds(selectedRef.current);
+      removeIds(ids);
       return;
     }
     if (e.key === "Escape") {
       setSelected(new Set());
       return;
     }
+    if (e.altKey && !mod) {
+      const c = colorForKey(e);
+      if (c) {
+        e.preventDefault();
+        api.colorBlocks([...ids], c.hex);
+        sfx.play("tap");
+        return;
+      }
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+        e.preventDefault();
+        sfx.play(api.nudge([...ids], e.key === "ArrowUp" ? -1 : 1) ? "tap" : "error");
+      }
+      return;
+    }
     if (mod && (k === "c" || k === "x")) {
       e.preventDefault();
-      const picked = blocksRef.current.filter((b) => selectedRef.current.has(b.id));
-      const text = toFountain({ blocks: picked }, { titlePage: false, includeNotes: true, includeSubtext: true });
+      const picked = blocksRef.current.filter((b) => ids.has(b.id));
+      const text = profileRef.current.toText(picked);
       navigator.clipboard?.writeText(text).catch(() => {});
-      if (k === "x") removeIds(selectedRef.current);
+      if (k === "x") removeIds(ids);
+      else sfx.play("tap");
+      return;
+    }
+    if (mod && k === "d") {
+      e.preventDefault();
+      api.duplicate([...ids]);
       return;
     }
     if (mod && k === "a") {
@@ -987,17 +1940,28 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       else api.undo();
       return;
     }
-    const hot = mod ? typeForHotkey(e) : null;
+    if (mod && !e.shiftKey && (k === "b" || k === "i" || k === "u")) {
+      e.preventDefault();
+      const wrap = (html) => {
+        const s = String(html || "").trim();
+        if (!s) return html;
+        return s.startsWith(`<${k}>`) && s.endsWith(`</${k}>`) ? s.slice(k.length + 2, -(k.length + 3)) : `<${k}>${s}</${k}>`;
+      };
+      commit(blocksRef.current.map((b) => (ids.has(b.id) && b.type !== "pagebreak" ? { ...b, html: wrap(b.html) } : b)));
+      return;
+    }
+    const hot = mod ? profileRef.current.hotkey(e) : null;
     if (hot && hot !== "pagebreak") {
       e.preventDefault();
       api.setType(null, hot);
     }
   };
 
-  // Undo still works with nothing focused, e.g. right after a block delete.
-  const onRootKeyDownPlain = (e) => {
-    if (selectedRef.current.size) return onRootKeyDown(e);
+  const onRootKeyDown = (e) => {
+    if (rootRef.current?.dataset.docMode === "on") return onHighlightKeyDown(e);
     if (e.target !== rootRef.current) return;
+    if (selectedRef.current.size) return onSelectionKeyDown(e);
+    // undo still works with nothing focused, e.g. right after a block delete
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
     if (mod && (k === "z" || k === "y")) {
@@ -1007,15 +1971,18 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     }
   };
 
-  useEffect(() => {
-    if (!selected.size) return;
-    const onDown = (e) => {
-      if (e.target.closest?.(".block-handle, .popover")) return;
-      setSelected(new Set());
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [selected]);
+  const onRootCopy = (e) => {
+    if (rootRef.current?.dataset.docMode !== "on") return;
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", highlightText());
+    if (e.type === "cut") replaceHighlight("");
+  };
+
+  const onRootPaste = (e) => {
+    if (rootRef.current?.dataset.docMode !== "on") return;
+    e.preventDefault();
+    replaceHighlight(e.clipboardData?.getData("text/plain") || "");
+  };
 
   const sceneNumbers = useMemo(() => {
     const map = {};
@@ -1024,7 +1991,22 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     return map;
   }, [blocks]);
 
+  // A character's colour runs through their cue and everything they say under it.
+  const tints = useMemo(() => {
+    const map = {};
+    let speaker = null;
+    for (const b of blocks) {
+      if (b.type === "note") continue; // a note mid-speech doesn't end it
+      if (b.type === "character") speaker = characterName(plainText(b.html)) || null;
+      else if (!SPEAKING.has(b.type)) speaker = null;
+      const c = speaker && cast?.[speaker]?.color;
+      if (c) map[b.id] = c;
+    }
+    return map;
+  }, [blocks, cast]);
+
   const menuBlock = menu ? blocks.find((b) => b.id === menu.id) : null;
+  const menuTargets = menuBlock && selected.has(menuBlock.id) ? [...selected] : menuBlock ? [menuBlock.id] : [];
   const lonely = blocks.length === 1;
 
   return (
@@ -1033,8 +2015,17 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       className="editor"
       tabIndex={-1}
       data-scene-numbers={settings.sceneNumbers}
+      data-profile={profile.kind}
       data-selecting={selected.size > 0}
-      onKeyDown={onRootKeyDownPlain}
+      onKeyDown={onRootKeyDown}
+      onCopy={onRootCopy}
+      onCut={onRootCopy}
+      onPaste={onRootPaste}
+      // Dragging highlighted text around would tear blocks apart, and a highlight
+      // drawn under the pointer mid-drag would otherwise start one. Lines move by
+      // their handles instead.
+      onDragStart={(e) => e.preventDefault()}
+      onDrop={(e) => e.preventDefault()}
     >
       {blocks.map((b) => (
         <Block
@@ -1047,54 +2038,62 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           lonely={lonely}
           dropMark={drop && drop.id === b.id ? drop.side : null}
           autocomplete={settings.autocomplete}
+          color={b.color || tints[b.id] || null}
           api={api}
         />
       ))}
       <div
         className="editor-tail"
-        onMouseDown={(e) => {
-          e.preventDefault();
+        contentEditable={false}
+        onClick={() => {
+          if (boxDragged.current) return;
+          dropHighlight();
           const list = blocksRef.current;
           const last = list[list.length - 1];
           if (last && last.type !== "pagebreak" && !textOf(last.html)) {
             setFocusReq({ id: last.id, at: "end", t: Date.now() });
             return;
           }
-          const nb = emptyBlock(last ? NEXT[last.type] || "action" : "scene");
+          const nb = last ? emptyBlock(profile.next[last.type] || profile.base) : profile.starter()[0];
           commit([...list, nb], { focus: { id: nb.id, at: "start" } });
         }}
       />
+      {marquee && <div className="marquee" style={marquee} contentEditable={false} />}
+
+      <SelectionBar rootRef={rootRef} customs={settings.customColors} onApplied={syncFromDom} />
 
       {menuBlock && (
         <BlockMenu
           anchorRef={menu.anchor}
           block={menuBlock}
+          types={profile.types}
+          count={menuTargets.length}
           onClose={() => setMenu(null)}
+          onColor={(hex) => {
+            setMenu(null);
+            api.colorBlocks(menuTargets, hex);
+            sfx.play("tap");
+          }}
           onPick={(type) => {
             setMenu(null);
-            api.setType(menuBlock.id, type);
-            if (menuBlock.type === "pagebreak") return;
+            api.setTypeMany(menuTargets, type);
+            if (menuBlock.type === "pagebreak" || menuTargets.length > 1) return;
             setFocusReq({ id: menuBlock.id, at: "end", t: Date.now() });
           }}
           onInsert={(side) => {
             setMenu(null);
             const list = blocksRef.current;
             const i = list.findIndex((b) => b.id === menuBlock.id);
-            const nb = emptyBlock("action");
+            const nb = emptyBlock(profile.base);
             commit([...list.slice(0, i + side), nb, ...list.slice(i + side)], { focus: { id: nb.id, at: "start" } });
           }}
           onDuplicate={() => {
             setMenu(null);
-            const list = blocksRef.current;
-            const i = list.findIndex((b) => b.id === menuBlock.id);
-            const copy = { ...menuBlock, id: uid() };
-            commit([...list.slice(0, i + 1), copy, ...list.slice(i + 1)], {
-              focus: copy.type === "pagebreak" ? null : { id: copy.id, at: "end" },
-            });
+            api.duplicate(menuTargets);
           }}
           onDelete={() => {
             setMenu(null);
-            removeIds(new Set([menuBlock.id]));
+            removeIds(new Set(menuTargets));
           }}
         />
       )}

@@ -1,7 +1,7 @@
 import { readAll, replaceAll, flushAll } from "./storage";
 import { saveTextFile } from "./native";
 
-const KEYS = ["scripts", "activity", "settings"];
+const KEYS = ["scripts", "scrambles", "activity", "settings"];
 
 export async function storageUsage() {
   const data = await readAll();

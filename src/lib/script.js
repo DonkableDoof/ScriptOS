@@ -3,26 +3,27 @@ import { uid } from "./storage";
 // Every element a screenplay is made of. `hotkey` is Ctrl+<key> (or Ctrl+Shift+<key>);
 // `prefix` is what you can type at the start of an Action line to turn it into one.
 export const TYPES = [
-  { key: "scene", label: "Scene Heading", icon: "S", hotkey: "1", prefix: "INT. / EXT.", placeholder: "INT. LOCATION - DAY", words: "scene heading slugline slug int ext location" },
-  { key: "action", label: "Action", icon: "A", hotkey: "2", prefix: "", placeholder: "What we see…", words: "action description text" },
+  { key: "scene", label: "Scene Heading", icon: "S", hotkey: "1", prefix: "INT. / EXT.", words: "scene heading slugline slug int ext location" },
+  { key: "action", label: "Action", icon: "A", hotkey: "2", prefix: "", words: "action description text" },
   { key: "character", label: "Character", icon: "C", hotkey: "3", prefix: "@", placeholder: "CHARACTER", words: "character name speaker cue" },
-  { key: "parenthetical", label: "Parenthetical", icon: "()", hotkey: "4", prefix: "(", placeholder: "beat", words: "parenthetical wryly beat direction" },
-  { key: "dialogue", label: "Dialogue", icon: "D", hotkey: "5", prefix: "", placeholder: "What they say…", words: "dialogue speech line talk" },
-  { key: "subtext", label: "Subtext", icon: "≈", hotkey: "6", prefix: "-#", placeholder: "What they really mean…", words: "subtext meaning hidden intent" },
-  { key: "transition", label: "Transition", icon: "→", hotkey: "7", prefix: ">", placeholder: "CUT TO:", words: "transition cut fade dissolve" },
-  { key: "shot", label: "Shot", icon: "◎", hotkey: "8", prefix: "!!", placeholder: "CLOSE ON", words: "shot camera angle close insert pov" },
-  { key: "note", label: "Note", icon: "✎", hotkey: "9", prefix: "[[", placeholder: "Note to self…", words: "note comment reminder todo" },
-  { key: "act", label: "Heading 1", icon: "H1", hotkey: "Shift+1", prefix: "#", placeholder: "ACT ONE", words: "heading 1 h1 act title part" },
-  { key: "sequence", label: "Heading 2", icon: "H2", hotkey: "Shift+2", prefix: "##", placeholder: "Sequence", words: "heading 2 h2 sequence section" },
-  { key: "beat", label: "Heading 3", icon: "H3", hotkey: "Shift+3", prefix: "###", placeholder: "Beat", words: "heading 3 h3 beat moment" },
-  { key: "centered", label: "Centered", icon: "≡", hotkey: "Shift+4", prefix: "><", placeholder: "THE END", words: "centered center title card end" },
-  { key: "lyrics", label: "Lyrics", icon: "♪", hotkey: "Shift+5", prefix: "~", placeholder: "Sung lines…", words: "lyrics song sing music" },
-  { key: "pagebreak", label: "Page Break", icon: "—", hotkey: "Shift+6", prefix: "---", placeholder: "", words: "page break divider new page" },
-];
+  { key: "parenthetical", label: "Parenthetical", icon: "()", hotkey: "4", prefix: "(", words: "parenthetical wryly beat direction" },
+  { key: "dialogue", label: "Dialogue", icon: "D", hotkey: "5", prefix: "", words: "dialogue speech line talk" },
+  { key: "subtext", label: "Subtext", icon: "≈", hotkey: "6", prefix: "-#", words: "subtext meaning hidden intent" },
+  { key: "transition", label: "Transition", icon: "→", hotkey: "7", prefix: ">", words: "transition cut fade dissolve" },
+  { key: "shot", label: "Shot", icon: "◎", hotkey: "8", prefix: "!!", words: "shot camera angle close insert pov" },
+  { key: "note", label: "Note", icon: "✎", hotkey: "9", prefix: "[[", words: "note comment reminder todo" },
+  { key: "act", label: "Act Heading", icon: "Ac", hotkey: "Shift+1", prefix: "", words: "act heading break teaser cold open tag" },
+  { key: "heading", label: "Heading 1", icon: "H1", hotkey: "Shift+2", prefix: "#", words: "heading 1 h1 title part" },
+  { key: "sequence", label: "Heading 2", icon: "H2", hotkey: "Shift+3", prefix: "##", words: "heading 2 h2 sequence section" },
+  { key: "beat", label: "Heading 3", icon: "H3", hotkey: "Shift+4", prefix: "###", words: "heading 3 h3 beat moment" },
+  { key: "centered", label: "Centered", icon: "≡", hotkey: "Shift+5", prefix: "><", words: "centered center title card end" },
+  { key: "lyrics", label: "Lyrics", icon: "♪", hotkey: "Shift+6", prefix: "~", words: "lyrics song sing music" },
+  { key: "pagebreak", label: "Page Break", icon: "—", hotkey: "Shift+7", prefix: "---", words: "page break divider new page" },
+].map((t) => ({ placeholder: t.key === "pagebreak" ? "" : "Enter text", ...t }));
 
 export const TYPE_BY_KEY = Object.fromEntries(TYPES.map((t) => [t.key, t]));
 
-// Ctrl+1..9 and Ctrl+Shift+1..6, read from e.code so Shift doesn't turn 1 into !
+// Ctrl+1..9 and Ctrl+Shift+1..7, read from e.code so Shift doesn't turn 1 into !
 export const typeForHotkey = (e) => {
   const m = /^Digit(\d)$/.exec(e.code || "");
   if (!m) return null;
@@ -42,6 +43,7 @@ export const NEXT = {
   shot: "action",
   note: "action",
   act: "scene",
+  heading: "action",
   sequence: "scene",
   beat: "action",
   centered: "action",
@@ -57,7 +59,8 @@ export const PRIVATE_TYPES = new Set(["note", "subtext"]);
 
 export const emptyBlock = (type = "action", html = "") => ({ id: uid(), type, html });
 
-export const starterBlocks = () => [emptyBlock("scene")];
+// A new script opens on its first act.
+export const starterBlocks = () => [emptyBlock("act")];
 
 // ---------------------------------------------------------------------------
 // Text
@@ -127,6 +130,7 @@ const LAYOUT = {
   transition: { width: 61, before: 1 },
   shot: { width: 61, before: 1 },
   act: { width: 61, before: 2 },
+  heading: { width: 61, before: 2 },
   sequence: { width: 61, before: 1 },
   beat: { width: 61, before: 1 },
   centered: { width: 61, before: 1 },
@@ -176,6 +180,7 @@ export const scriptStats = (script) => {
   const { words, lines } = totalsOf(blocks);
   const characters = {};
   const scenes = [];
+  const acts = [];
   let dialogueLines = 0;
   let speaker = null;
 
@@ -183,6 +188,9 @@ export const scriptStats = (script) => {
     const { text } = blockMetrics(b);
     if (b.type === "scene") {
       scenes.push({ id: b.id, index, text: text.toUpperCase() || "UNTITLED SCENE" });
+      speaker = null;
+    } else if (b.type === "act") {
+      acts.push({ id: b.id, index, text: text.toUpperCase() || "UNTITLED ACT" });
       speaker = null;
     } else if (b.type === "character") {
       speaker = characterName(text) || null;
@@ -193,7 +201,8 @@ export const scriptStats = (script) => {
         characters[speaker].lines += 1;
         characters[speaker].words += blockMetrics(b).words;
       }
-    } else if (b.type !== "parenthetical" && b.type !== "subtext") {
+    } else if (b.type !== "parenthetical" && b.type !== "subtext" && b.type !== "note") {
+      // a note to yourself mid-speech doesn't end it
       speaker = null;
     }
   });
@@ -204,6 +213,7 @@ export const scriptStats = (script) => {
     lines,
     dialogueLines,
     scenes,
+    acts,
     characters: Object.values(characters).sort((a, b) => b.lines - a.lines || a.name.localeCompare(b.name)),
     pages,
   };
@@ -276,6 +286,21 @@ export const newScript = (fields = {}) => {
   };
 };
 
+// A scramble: an idea got down fast, or a rough outline of something to write
+// properly later. A plain document, not a screenplay.
+export const newScramble = (fields = {}) => {
+  const now = Date.now();
+  return { id: uid(), title: "", blocks: [emptyBlock("text")], createdAt: now, updatedAt: now, ...fields };
+};
+
+// A scramble's name: its title, or failing that its first line.
+export const scrambleTitle = (scramble) => {
+  const t = String(scramble?.title || "").trim();
+  if (t) return t;
+  const first = (scramble?.blocks || []).map((b) => blockMetrics(b).text).find(Boolean);
+  return first ? (first.length > 48 ? `${first.slice(0, 46)}…` : first) : "Untitled Scramble";
+};
+
 export const timeAgo = (ts) => {
   if (!ts) return "";
   const s = Math.max(0, (Date.now() - ts) / 1000);
@@ -294,9 +319,13 @@ export const timeAgo = (ts) => {
 // ---------------------------------------------------------------------------
 export const TIMES_OF_DAY = ["DAY", "NIGHT", "MORNING", "AFTERNOON", "EVENING", "DUSK", "DAWN", "CONTINUOUS", "LATER", "MOMENTS LATER"];
 export const SCENE_PREFIXES = ["INT. ", "EXT. ", "INT./EXT. ", "EST. "];
+export const ACT_NUMBERS = ["ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX", "SEVEN", "EIGHT"];
+export const ACT_NAMES = ["COLD OPEN", "TEASER", "PROLOGUE", "TAG", "EPILOGUE"];
 export const TRANSITIONS = ["CUT TO:", "SMASH CUT TO:", "MATCH CUT TO:", "JUMP CUT TO:", "DISSOLVE TO:", "FADE TO BLACK.", "FADE OUT.", "FADE IN:", "INTERCUT WITH:", "BACK TO:"];
 
-export const suggestionsFor = (type, text, blocks, selfId) => {
+// `known` adds names remembered outside these blocks: the script's cast list, and
+// the other episodes of the same show.
+export const suggestionsFor = (type, text, blocks, selfId, known = []) => {
   // untrimmed on purpose: "EXT. " has moved on from "EXT."
   const typed = String(text || "").replace(/ /g, " ").replace(/^\s+/, "").toUpperCase();
   const pick = (pool) =>
@@ -305,7 +334,7 @@ export const suggestionsFor = (type, text, blocks, selfId) => {
   if (type === "character") {
     if (!typed.trim()) return [];
     const names = blocks.filter((b) => b.type === "character" && b.id !== selfId).map((b) => characterName(blockMetrics(b).text)).filter(Boolean);
-    return pick(names);
+    return pick([...names, ...known.map(characterName)]);
   }
   if (type === "scene") {
     const dash = / - $/.exec(typed) || / -$/.exec(typed);
@@ -317,6 +346,22 @@ export const suggestionsFor = (type, text, blocks, selfId) => {
     const headings = blocks.filter((b) => b.type === "scene" && b.id !== selfId).map((b) => blockMetrics(b).text.toUpperCase()).filter(Boolean);
     const locations = headings.map((h) => h.replace(/\s+-\s+[^-]*$/, ""));
     return pick([...SCENE_PREFIXES, ...locations, ...headings]);
+  }
+  if (type === "act") {
+    // the next act first, then the end of the one you're in, then the named parts
+    const used = blocks
+      .filter((b) => b.type === "act" && b.id !== selfId)
+      .map((b) => blockMetrics(b).text.toUpperCase())
+      .map((t) => ACT_NUMBERS.indexOf((/^ACT (\w+)$/.exec(t) || [])[1]))
+      .filter((n) => n >= 0);
+    const last = used.length ? Math.max(...used) : -1;
+    const pool = [
+      ...(last + 1 < ACT_NUMBERS.length ? [`ACT ${ACT_NUMBERS[last + 1]}`] : []),
+      ...(last >= 0 ? [`END OF ACT ${ACT_NUMBERS[last]}`] : []),
+      ...ACT_NUMBERS.map((n) => `ACT ${n}`),
+      ...ACT_NAMES,
+    ];
+    return typed.trim() ? pick(pool) : pick(pool).slice(0, 5);
   }
   if (type === "transition") return pick(TRANSITIONS);
   return [];

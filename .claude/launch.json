@@ -3,9 +3,9 @@
   "configurations": [
     {
       "name": "scriptos-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
-      "port": 1440
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["vite", "--port", "1450"],
+      "port": 1450
     }
   ]
 }

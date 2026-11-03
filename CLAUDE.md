@@ -11,6 +11,13 @@ Data lives in IndexedDB (`src/lib/storage.js`), keyed `scripts`, `activity`, `se
   Also keep `src-tauri/Cargo.toml` `version` in step. `npm version patch --no-git-tag-version`
   updates package.json and package-lock.json together.
 
+## Dev template
+
+`src/dev/templateScript.js` builds a script showing every element and kind of formatting,
+each introduced by a note. While running from the dev server, Home → Import → Formatting
+Template adds it (it isn't in release builds). Update it when adding element types or
+formatting; it adds a warning note listing any element type it doesn't show.
+
 ## Commands
 
 - Dev window: `npm run app` (VS Code F5 runs the same thing)

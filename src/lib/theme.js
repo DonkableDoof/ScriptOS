@@ -75,8 +75,13 @@ export const DEFAULT_SETTINGS = {
   uiScale: 1,
   paper: false,
   editorSize: 16,
+  // the script page's zoom, from Ctrl+scroll (1 = 100%)
+  docZoom: 1,
   sceneNumbers: true,
   autocomplete: true,
+  autoCastColors: false,
+  // your own named colours: { id, name, hex }
+  customColors: [],
   typewriterScroll: false,
   typewriterSounds: false,
   typewriterBell: false,
@@ -115,6 +120,7 @@ export function applyTheme(settings) {
     root.style.setProperty("--paperInk", "#1b1712");
   }
   root.style.setProperty("--editorSize", `${settings?.editorSize || 16}px`);
+  root.style.setProperty("--docZoom", String(settings?.docZoom || 1));
 
   root.dataset.mode = mode;
   root.dataset.paper = settings?.paper ? "on" : "off";

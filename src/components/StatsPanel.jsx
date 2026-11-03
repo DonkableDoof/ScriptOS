@@ -110,18 +110,15 @@ export function FunFacts({ scripts, statsById, activity }) {
       if (!longest || st.pages > longest.pages) longest = { title: s.title, pages: st.pages };
     }
     const chatty = Object.entries(cast).sort((a, b) => b[1] - a[1])[0];
-    const written = allTimeTotals(activity).words;
     const out = [
       { icon: "🎬", value: n(scenes), label: scenes === 1 ? "scene written" : "scenes written" },
       { icon: "💬", value: n(dialogue), label: "lines of dialogue" },
       { icon: "⏱️", value: pages >= 60 ? `${(pages / 60).toFixed(1)}h` : pages > 0 && pages < 1 ? "<1m" : `${Math.round(pages)}m`, label: "of screen time, roughly" },
-      { icon: "🎞️", value: (pages / 110).toFixed(pages / 110 >= 10 ? 0 : 1), label: "feature films’ worth of pages" },
-      { icon: "☕", value: n(Math.ceil(written / 500)), label: "coffees, at one per 500 words" },
       { icon: "📚", value: n(Object.keys(cast).length), label: "characters created" },
     ];
     if (chatty) out.push({ icon: "🗣️", value: chatty[0], label: `talks the most · ${n(chatty[1])} lines` });
     if (longest && longest.pages > 0) out.push({ icon: "📜", value: longest.title, label: `is your longest · ${formatPages(longest.pages)}` });
-    if (words) out.push({ icon: "⌨️", value: n(words * 5.5), label: "keystrokes, give or take" });
+    if (words) out.push({ icon: "⌨️", value: n(words * 5.5), label: "keystrokes" });
     return out;
   }, [scripts, statsById, activity]);
 

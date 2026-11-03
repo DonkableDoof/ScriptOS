@@ -31,14 +31,28 @@ export default function Popover({ anchorRef, onClose, width, align = "left", cla
     place();
     window.addEventListener("resize", place);
     window.addEventListener("scroll", place, true);
+    // A menu that filters as you type (the slash menu) changes size, and so does the
+    // line it hangs off as it wraps: either way it is placed again, so a menu that
+    // had to open above a line closes the gap as it shrinks.
+    const watch = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
+    if (watch) {
+      if (ref.current) watch.observe(ref.current);
+      if (anchorRef.current) watch.observe(anchorRef.current);
+    }
     return () => {
       window.removeEventListener("resize", place);
       window.removeEventListener("scroll", place, true);
+      watch?.disconnect();
     };
   }, [anchorRef, align]);
 
+  // A popover opened from inside this one (a colour picker from a menu) lives in its
+  // own portal, but React still bubbles its clicks up through this one, marking
+  // them as ours on the way, so using it doesn't close the menu underneath.
+  const mark = useRef({});
   useEffect(() => {
     const onDown = (e) => {
+      if (e.__popovers?.has(mark.current)) return;
       if (ref.current?.contains(e.target) || anchorRef.current?.contains(e.target)) return;
       closeRef.current();
     };
@@ -55,6 +69,7 @@ export default function Popover({ anchorRef, onClose, width, align = "left", cla
     <div
       ref={ref}
       className={`popover ${className}`}
+      onMouseDown={(e) => (e.nativeEvent.__popovers ||= new Set()).add(mark.current)}
       style={{
         left: pos?.left ?? 0,
         top: pos?.top ?? 0,

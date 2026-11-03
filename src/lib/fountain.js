@@ -10,20 +10,41 @@ const isAllCaps = (s) => hasLetters(s) && s === s.toUpperCase();
 // ---------------------------------------------------------------------------
 // inline marks
 // ---------------------------------------------------------------------------
-const marksToHtml = (line) =>
+export const marksToHtml = (line) =>
   escapeHtml(line)
     .replace(/\*\*\*(.+?)\*\*\*/g, "<b><i>$1</i></b>")
     .replace(/\*\*(.+?)\*\*/g, "<b>$1</b>")
     .replace(/\*(.+?)\*/g, "<i>$1</i>")
     .replace(/_(.+?)_/g, "<u>$1</u>");
 
-const htmlToMarks = (html) =>
+// Formatting written as styled spans (pasted, or from a colour change) reads as the
+// tag it stands for.
+const spansToTags = (html) => {
+  if (!/<span[^>]*style=/i.test(html) || typeof document === "undefined") return html;
+  const box = document.createElement("div");
+  box.innerHTML = html;
+  // innermost first, so an outer span carries its converted contents with it
+  [...box.querySelectorAll("span[style]")].reverse().forEach((span) => {
+    const s = span.style;
+    let inner = span.innerHTML;
+    if (/bold|[6-9]00/.test(s.fontWeight)) inner = `<b>${inner}</b>`;
+    if (s.fontStyle === "italic") inner = `<i>${inner}</i>`;
+    if (/underline/.test(s.textDecorationLine || s.textDecoration)) inner = `<u>${inner}</u>`;
+    span.outerHTML = inner;
+  });
+  return box.innerHTML;
+};
+
+export const htmlToMarks = (html) =>
   plainText(
-    String(html || "")
+    spansToTags(String(html || ""))
       .replace(/<\/?(b|strong)>/gi, "**")
       .replace(/<\/?(i|em)>/gi, "*")
       .replace(/<\/?u>/gi, "_")
   ).trim();
+
+// Section headings that are acts rather than general headings.
+export const ACT_TEXT = /^(ACT\s+\S+|END OF ACT\b.*|COLD OPEN|TEASER|PROLOGUE|EPILOGUE|TAG)$/i;
 
 // ---------------------------------------------------------------------------
 // parse
@@ -90,7 +111,10 @@ export function parseFountain(text, { titlePage = false } = {}) {
       continue;
     }
     if (/^#\s*/.test(line)) {
-      push("act", line.replace(/^#\s*/, ""));
+      // Fountain writes acts and other top-level sections the same way; the words
+      // tell them apart
+      const text = line.replace(/^#\s*/, "");
+      push(ACT_TEXT.test(text.trim()) ? "act" : "heading", text);
       continue;
     }
     if (/^\[\[.*\]\]$/.test(line)) {
@@ -213,6 +237,7 @@ function writeBody(blocks, out, { includeNotes, includeSubtext }) {
         out.push(`[[Subtext: ${text}]]`);
         break;
       case "act":
+      case "heading":
         out.push(`# ${text}`);
         break;
       case "sequence":
@@ -270,6 +295,7 @@ const COLUMNS = {
   subtext: { indent: 10, width: 35 },
   note: { indent: 0, width: 60 },
   act: { center: true, upper: true },
+  heading: { indent: 0, width: 60, upper: true },
   sequence: { indent: 0, width: 60, upper: true },
   beat: { indent: 0, width: 60 },
   centered: { center: true },

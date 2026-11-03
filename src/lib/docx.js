@@ -1,4 +1,5 @@
 import { emptyBlock, escapeHtml } from "./script";
+import { ACT_TEXT } from "./fountain";
 
 // ---------------------------------------------------------------------------
 // Word and Google Docs import. A .docx is a zip of XML files; the browser can
@@ -149,7 +150,8 @@ const BY_STYLE = [
   [/shot/i, "shot"],
   [/lyric/i, "lyrics"],
   [/action|description/i, "action"],
-  [/^heading ?1$/i, "act"],
+  [/\bact\b/i, "act"],
+  [/^heading ?1$/i, "heading"],
   [/^heading ?2$/i, "sequence"],
   [/^heading ?3$/i, "beat"],
 ];
@@ -196,6 +198,7 @@ export function classifyParagraphs(paras) {
 
     let type = "action";
     if (SCENE.test(t)) type = "scene";
+    else if (caps(t) && ACT_TEXT.test(t)) type = "act";
     else if (TRANSITION.test(t) || (p.jc === "right" && caps(t))) type = "transition";
     else if (/^\(.*\)$/.test(t) && speaking) type = "parenthetical";
     else if (

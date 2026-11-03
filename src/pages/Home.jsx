@@ -5,6 +5,7 @@ import Confirm from "../components/Confirm";
 import Popover from "../components/Popover";
 import Modal from "../components/Modal";
 import { StatTiles, GoalPanel, FunFacts } from "../components/StatsPanel";
+import ScramblesPanel from "../components/ScramblesPanel";
 import { useStore } from "../lib/store";
 import Select from "../components/Select";
 import { scriptStats, newScript, FORMATS } from "../lib/script";
@@ -62,6 +63,13 @@ export default function Home({ navigate }) {
   const openNew = () => {
     setCreating(newScript({ author: settings.lastAuthor || "" }));
     sfx.play("open");
+  };
+
+  // A scramble opens straight onto a blank page: no dialog in the way of the idea.
+  const newScramble = () => {
+    const scramble = store.addScramble();
+    sfx.play("add");
+    navigate({ page: "scramble", id: scramble.id });
   };
 
   const finishImport = (fields) => {
@@ -138,6 +146,9 @@ export default function Home({ navigate }) {
           <button ref={importRef} className="btn btn-ghost" onClick={() => setImportOpen((v) => !v)}>
             Import ▾
           </button>
+          <button className="btn" onClick={newScramble} title="Get an idea down fast">
+            + New Scramble
+          </button>
           <button className="btn btn-primary" onClick={openNew}>
             + New Script
           </button>
@@ -182,12 +193,6 @@ export default function Home({ navigate }) {
             </div>
 
             <div className="gallery">
-              {filter !== "archived" && !query && (
-                <button className="scard scard-new" onClick={openNew}>
-                  <span className="scard-new-plus">+</span>
-                  <span>New Script</span>
-                </button>
-              )}
               {shown.map((s) => (
                 <ScriptCard
                   key={s.id}
@@ -197,17 +202,35 @@ export default function Home({ navigate }) {
                   onMenu={(anchor) => setMenu({ id: s.id, anchor })}
                 />
               ))}
+              {/* the last slot: always there on an empty shelf, otherwise it shows itself when you point at it */}
+              {filter !== "archived" && !query && (
+                <button className="scard scard-new" data-alone={shown.length === 0 || undefined} onClick={openNew}>
+                  <span className="scard-new-plus">+</span>
+                  <span>New Script</span>
+                </button>
+              )}
             </div>
 
-            {shown.length === 0 && (
+            {shown.length === 0 && query && (
               <div className="empty">
-                <span className="empty-title">{query ? "No matches" : filter === "all" ? "FADE IN:" : "Nothing here"}</span>
+                <span className="empty-title">No matches</span>
               </div>
             )}
           </section>
 
           <aside className="rail">
             {Number(settings.dailyGoal) > 0 && <GoalPanel activity={activity} goal={Number(settings.dailyGoal)} />}
+            {store.scrambles.length > 0 && (
+              <ScramblesPanel
+                scrambles={store.scrambles}
+                onNew={newScramble}
+                onOpen={(s) => navigate({ page: "scramble", id: s.id })}
+                onDelete={(s) => {
+                  store.deleteScramble(s.id);
+                  sfx.play("remove");
+                }}
+              />
+            )}
             <FunFacts scripts={scripts} statsById={statsById} activity={activity} />
           </aside>
         </div>
@@ -215,9 +238,6 @@ export default function Home({ navigate }) {
 
       {menuScript && (
         <Popover anchorRef={menu.anchor} width={200} align="right" className="card-menu" onClose={() => setMenu(null)}>
-          <button className="menu-item" onClick={() => navigate({ page: "script", id: menuScript.id })}>
-            <span className="menu-icon">↗</span>Open
-          </button>
           <button
             className="menu-item"
             onClick={() => {
@@ -225,7 +245,7 @@ export default function Home({ navigate }) {
               setMenu(null);
             }}
           >
-            <span className="menu-icon">✎</span>Details & Cover
+            <span className="menu-icon">✎</span>Edit
           </button>
           <button
             className="menu-item"
@@ -291,6 +311,22 @@ export default function Home({ navigate }) {
             <span className="menu-icon">F</span>Fountain or Text
             <span className="menu-hint">.fountain .txt</span>
           </button>
+          {import.meta.env.DEV && (
+            <>
+              <div className="menu-sep" />
+              <button
+                className="menu-item"
+                onClick={async () => {
+                  setImportOpen(false);
+                  const { templateScript } = await import("../dev/templateScript");
+                  finishImport(templateScript());
+                }}
+              >
+                <span className="menu-icon">✦</span>Formatting Template
+                <span className="menu-hint">dev</span>
+              </button>
+            </>
+          )}
         </Popover>
       )}
 

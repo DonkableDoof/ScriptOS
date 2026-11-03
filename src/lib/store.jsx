@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { usePersistentState, boot, uid } from "./storage";
 import { DEFAULT_SETTINGS } from "./theme";
-import { newScript, totalsOf, needsMigration, migrateScript } from "./script";
+import { newScript, newScramble, totalsOf, needsMigration, migrateScript } from "./script";
 import { addActivity } from "./activity";
 
 const StoreContext = createContext(null);
@@ -37,6 +37,7 @@ export function StoreProvider({ children }) {
 
 function Store({ snapshot, children }) {
   const [scripts, setScripts] = usePersistentState("scripts", [], snapshot);
+  const [scrambles, setScrambles] = usePersistentState("scrambles", [], snapshot);
   const [activity, setActivity] = usePersistentState("activity", {}, snapshot);
   const [settings, setSettings] = usePersistentState("settings", DEFAULT_SETTINGS, snapshot);
 
@@ -44,6 +45,8 @@ function Store({ snapshot, children }) {
   // latest list here rather than inside a state updater, which StrictMode runs twice.
   const scriptsRef = useRef(scripts);
   scriptsRef.current = scripts;
+  const scramblesRef = useRef(scrambles);
+  scramblesRef.current = scrambles;
 
   // One-off upgrades for data saved by older versions.
   useEffect(() => {
@@ -58,8 +61,21 @@ function Store({ snapshot, children }) {
     const patchScript = (id, changes) =>
       setScripts((list) => list.map((s) => (s.id === id ? { ...s, ...changes, updatedAt: Date.now() } : s)));
 
+    const patchScramble = (id, changes) =>
+      setScrambles((list) => list.map((s) => (s.id === id ? { ...s, ...changes, updatedAt: Date.now() } : s)));
+
+    // Words written anywhere count towards the stats, scrambles included.
+    const record = (beforeBlocks, afterBlocks) => {
+      const before = totalsOf(beforeBlocks);
+      const after = totalsOf(afterBlocks);
+      const dw = after.words - before.words;
+      const dl = after.lines - before.lines;
+      if (dw || dl) setActivity((a) => addActivity(a, dw, dl));
+    };
+
     return {
       scripts,
+      scrambles,
       activity,
       settings: { ...DEFAULT_SETTINGS, ...settings },
       updateSettings: (changes) => setSettings((prev) => ({ ...DEFAULT_SETTINGS, ...prev, ...changes })),
@@ -75,14 +91,26 @@ function Store({ snapshot, children }) {
       updateBlocks: (id, blocks) => {
         const current = scriptsRef.current.find((s) => s.id === id);
         if (!current) return;
-        const before = totalsOf(current.blocks);
-        const after = totalsOf(blocks);
         scriptsRef.current = scriptsRef.current.map((s) => (s.id === id ? { ...s, blocks } : s));
         patchScript(id, { blocks });
-        const dw = after.words - before.words;
-        const dl = after.lines - before.lines;
-        if (dw || dl) setActivity((a) => addActivity(a, dw, dl));
+        record(current.blocks, blocks);
       },
+
+      // Scrambles: quick notes and rough outlines, kept apart from scripts.
+      addScramble: (fields) => {
+        const scramble = newScramble(fields);
+        setScrambles((list) => [scramble, ...list]);
+        return scramble;
+      },
+      updateScramble: patchScramble,
+      updateScrambleBlocks: (id, blocks) => {
+        const current = scramblesRef.current.find((s) => s.id === id);
+        if (!current) return;
+        scramblesRef.current = scramblesRef.current.map((s) => (s.id === id ? { ...s, blocks } : s));
+        patchScramble(id, { blocks });
+        record(current.blocks, blocks);
+      },
+      deleteScramble: (id) => setScrambles((list) => list.filter((s) => s.id !== id)),
 
       duplicateScript: (id) => {
         const source = scriptsRef.current.find((s) => s.id === id);
@@ -101,7 +129,7 @@ function Store({ snapshot, children }) {
       },
       deleteScript: (id) => setScripts((list) => list.filter((s) => s.id !== id)),
     };
-  }, [scripts, activity, settings, setScripts, setActivity, setSettings]);
+  }, [scripts, scrambles, activity, settings, setScripts, setScrambles, setActivity, setSettings]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
