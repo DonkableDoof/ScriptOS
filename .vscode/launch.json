@@ -1,0 +1,20 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch ScriptOS (app window)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run app",
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "Launch in browser",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://localhost:1440",
+      "webRoot": "${workspaceFolder}/src",
+      "preLaunchTask": "start dev server"
+    }
+  ]
+}

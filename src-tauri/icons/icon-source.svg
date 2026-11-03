@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2a2118"/>
+      <stop offset="1" stop-color="#0e0b09"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f3cd6b"/>
+      <stop offset="1" stop-color="#d69a2d"/>
+    </linearGradient>
+    <clipPath id="clap">
+      <rect x="0" y="0" width="660" height="110" rx="22"/>
+    </clipPath>
+  </defs>
+  <rect width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <!-- page -->
+  <rect x="222" y="330" width="580" height="540" rx="34" fill="#f6efe2"/>
+  <rect x="296" y="402" width="300" height="30" rx="15" fill="#2a2118"/>
+  <rect x="296" y="472" width="432" height="22" rx="11" fill="#b7a98f"/>
+  <rect x="296" y="516" width="380" height="22" rx="11" fill="#b7a98f"/>
+  <rect x="452" y="594" width="140" height="24" rx="12" fill="#d2564f"/>
+  <rect x="380" y="642" width="284" height="22" rx="11" fill="#8a7d66"/>
+  <rect x="380" y="686" width="230" height="22" rx="11" fill="#8a7d66"/>
+  <rect x="296" y="770" width="410" height="22" rx="11" fill="#b7a98f"/>
+  <!-- clapper -->
+  <g transform="translate(182 188) rotate(-9 0 110)">
+    <g clip-path="url(#clap)">
+      <rect width="660" height="110" fill="url(#gold)"/>
+      <g fill="#1a1410">
+        <polygon points="40,0 120,0 60,110 -20,110"/>
+        <polygon points="200,0 280,0 220,110 140,110"/>
+        <polygon points="360,0 440,0 380,110 300,110"/>
+        <polygon points="520,0 600,0 540,110 460,110"/>
+      </g>
+    </g>
+  </g>
+  <circle cx="226" cy="298" r="26" fill="#f3cd6b"/>
+  <circle cx="226" cy="298" r="10" fill="#1a1410"/>
+</svg>
