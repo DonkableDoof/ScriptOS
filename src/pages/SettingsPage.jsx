@@ -365,7 +365,7 @@ export default function SettingsPage({ navigate }) {
           </div>
         </section>
 
-        <p className="settings-foot">ScriptOS v{__APP_VERSION__} · sister app to ContentOS</p>
+        <p className="settings-foot">ScriptOS v{__APP_VERSION__}</p>
       </div>
 
       {restore && (

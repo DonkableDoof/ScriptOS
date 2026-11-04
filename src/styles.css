@@ -823,14 +823,14 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .change-row {
   margin: 6px 0 4px; padding: 7px 10px; border-radius: 8px; user-select: none; font-family: "DM Sans", system-ui, sans-serif;
   font-size: 0.82em; line-height: 1.45; color: var(--text); background: var(--bgCard2); border: 1px solid var(--border);
-  border-left: 3px solid #e3c65a;
+  border-left: 3px solid #ec8f3a;
 }
 .change-row[data-op="insert"] { border-left-color: #4aba6a; }
 .change-row[data-op="delete"] { border-left-color: #d2564f; }
 .change-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
 .change-who { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .change-label { font-size: 0.85em; color: var(--textDim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex-shrink: 100; }
-.change-stale { font-size: 0.85em; color: #e3c65a; }
+.change-stale { font-size: 0.85em; color: #ec8f3a; }
 .change-actions { margin-left: auto; display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
 .change-btn { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border-radius: 6px; border: 1px solid var(--border); background: transparent; font-size: 12px; }
 .change-btn[data-kind="accept"] { color: #4aba6a; }
@@ -841,6 +841,8 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .change-diff del { color: #e0736c; text-decoration: line-through; background: rgba(210, 86, 79, 0.14); border-radius: 2px; }
 .change-diff ins { color: #6fd18c; text-decoration: none; background: rgba(74, 186, 106, 0.16); border-radius: 2px; }
 .change-diff em { color: var(--textDim); }
+/* words added inside an existing line are an edit, so orange; green is for a whole new line */
+.change-row[data-op="edit"] .change-diff ins { color: #f2a55e; background: rgba(236, 143, 58, 0.18); }
 .changes-all { display: flex; gap: 6px; }
 .change-row[data-jumps] { cursor: pointer; transition: border-color 0.12s, background 0.12s; }
 .change-row[data-jumps]:hover { background: var(--bgCard); border-top-color: var(--borderStrong, var(--textDim)); border-right-color: var(--borderStrong, var(--textDim)); border-bottom-color: var(--borderStrong, var(--textDim)); }
@@ -851,7 +853,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
 .change-card .change-row + .change-row { margin-top: 6px; }
 /* a line with a suggestion on it. An inset shadow rather than a background, so a note keeps its colour underneath */
 .block[data-change] > .block-body { border-radius: 3px; box-shadow: inset 0 0 0 999px var(--change-tint); }
-.block[data-change="edit"] { --change-tint: rgba(227, 198, 90, 0.2); }
+.block[data-change="edit"] { --change-tint: rgba(236, 143, 58, 0.22); }
 .block[data-change="insert"] { --change-tint: rgba(74, 186, 106, 0.18); }
 .block[data-change="delete"] { --change-tint: rgba(210, 86, 79, 0.18); }
 /* something suggested just after this line that has no line of its own on screen */
@@ -860,7 +862,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
   background: #4aba6a;
 }
 .block[data-change-after="delete"]:not([data-drop])::after { background: #d2564f; }
-.block[data-change-after="edit"]:not([data-drop])::after { background: #e3c65a; }
+.block[data-change-after="edit"]:not([data-drop])::after { background: #ec8f3a; }
 .reader-banner { align-self: stretch; margin: 10px 0; padding: 8px 12px; font-size: 12.5px; text-align: center; color: var(--textMuted); border-radius: 8px; background: var(--accentSoft); }
 .cloud-btn[data-on="true"] { color: var(--accent); }
 .scramble-cloud { color: var(--accent); }
