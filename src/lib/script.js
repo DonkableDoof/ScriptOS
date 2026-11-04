@@ -89,8 +89,11 @@ export const characterName = (text) =>
     .toUpperCase();
 
 // Renames a character through a script: their cue lines, and their name wherever it's
-// mentioned. Only capitalised mentions count, so renaming WILL leaves "I will go" alone.
+// mentioned. Where case shows, only capitalised mentions count, so renaming WILL leaves
+// "I will go" alone. Lines drawn in capitals (see text-transform in styles.css) can be typed
+// in any case and all look like the name, so there every match counts.
 // Formatting is kept, and a line with nothing to change stays the same object.
+const SHOWN_IN_CAPITALS = new Set(["scene", "character", "transition", "shot", "act", "heading", "sequence"]);
 const titled = (s) => s.toLowerCase().replace(/(^|[\s'-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
 const eachText = (root, fn) => {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -109,15 +112,16 @@ export function renameCharacter(blocks, oldName, typed) {
   const next = blocks.map((b) => {
     if (b.type === "pagebreak" || !b.html) return b;
     const cue = b.type === "character";
+    const capitals = SHOWN_IN_CAPITALS.has(b.type);
     if (cue && characterName(plainText(b.html)) !== oldName) return b; // somebody else's name
     const box = document.createElement("template");
     box.innerHTML = b.html;
     let changed = false;
     eachText(box.content, (node) => {
       const text = node.nodeValue.replace(word(), (m) => {
-        if (m === m.toLowerCase()) return m;
+        if (!capitals && m === m.toLowerCase()) return m;
         changed = true;
-        return cue || m === m.toUpperCase() ? upper : display;
+        return capitals || m === m.toUpperCase() ? upper : display;
       });
       if (text !== node.nodeValue) node.nodeValue = text;
     });
