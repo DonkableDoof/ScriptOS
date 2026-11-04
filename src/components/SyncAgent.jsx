@@ -6,14 +6,15 @@ import { deviceName } from "../lib/native";
 import { shrinkItemIcons } from "../lib/image";
 import { notify } from "../lib/notice";
 
-const EVERY = 20000;
+const EVERY = 60000;
 export const SYNC_RELINK = "scriptos:sync-relink";
 
 const newId = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 8);
 
-// Keeps this device in step with your account while you're signed in: on start, every
-// 20 seconds, whenever the window comes back to the front, and a few seconds after any
-// change to something uploaded. Signed out, it does nothing at all.
+// Keeps this device in step with your account while you're signed in: on start, whenever
+// the window comes back to the front, every minute while it's there, and a few seconds
+// after a change to something uploaded. Signed out, it does nothing at all, and writing in
+// a script you haven't uploaded never contacts the server.
 export default function SyncAgent() {
   const store = useStore();
   const storeRef = useRef(store);
@@ -92,7 +93,9 @@ export default function SyncAgent() {
     };
 
     round();
-    const timer = setInterval(round, EVERY);
+    const timer = setInterval(() => {
+      if (!document.hidden && document.hasFocus()) round();
+    }, EVERY);
     window.addEventListener("focus", round);
     window.addEventListener(SYNC_NOW, round);
     window.addEventListener(SYNC_RELINK, onRelink);
@@ -106,11 +109,22 @@ export default function SyncAgent() {
   }, [userId, device?.id, device?.name]);
 
   // a change to something uploaded goes up a moment after you stop typing
+  const uploaded = useRef(null);
+  const buried = useRef(store.tombstones);
+  const soon = useRef(null);
   useEffect(() => {
     if (!userId) return;
-    const t = setTimeout(() => window.dispatchEvent(new Event(SYNC_NOW)), 3000);
-    return () => clearTimeout(t);
-  }, [store.scripts, store.scrambles, store.tombstones]);
+    const now = [...store.scripts, ...store.scrambles].filter((i) => i.cloud && i.cloudOwner === userId);
+    const was = uploaded.current;
+    const same = !was || (was.length === now.length && now.every((item, i) => item === was[i]));
+    const sameBuried = buried.current === store.tombstones;
+    uploaded.current = now;
+    buried.current = store.tombstones;
+    if (same && sameBuried) return;
+    clearTimeout(soon.current);
+    soon.current = setTimeout(() => window.dispatchEvent(new Event(SYNC_NOW)), 3000);
+  }, [userId, store.scripts, store.scrambles, store.tombstones]);
+  useEffect(() => () => clearTimeout(soon.current), []);
 
   return null;
 }

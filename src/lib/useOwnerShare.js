@@ -72,7 +72,9 @@ export function useOwnerShare(script, store) {
   useEffect(() => {
     if (!shareId || !mine) return;
     refresh();
-    const timer = setInterval(refresh, EVERY);
+    const timer = setInterval(() => {
+      if (!document.hidden) refresh();
+    }, EVERY);
     window.addEventListener("focus", refresh);
     return () => {
       clearInterval(timer);

@@ -159,22 +159,62 @@ const exec = (cmd, value = null) => {
 
 // Pasted or older text often carries its own colour; clearing it first means a
 // new colour actually takes instead of losing to a nested span.
+const stripColor = (el) => {
+  el.style.color = "";
+  el.removeAttribute("color");
+  if (!el.getAttribute("style")) el.removeAttribute("style");
+};
+
 const clearColorsIn = (range) => {
   const scope =
     range.commonAncestorContainer.nodeType === 1 ? range.commonAncestorContainer : range.commonAncestorContainer.parentElement;
   scope?.querySelectorAll("[style*='color'], font[color]").forEach((el) => {
     if (!range.intersectsNode(el) || el.dataset?.blockId) return;
-    el.style.color = "";
-    el.removeAttribute("color");
-    if (!el.getAttribute("style")) el.removeAttribute("style");
+    stripColor(el);
   });
+};
+
+// Taking the colour off exactly what's highlighted. The browser only knows how to set a
+// colour, splitting any span the highlight sits inside, so this sets a marker colour and
+// then takes the marker off. On a line with a colour of its own there'd be nothing to fall
+// back to but that colour, so those words get the page's ordinary ink instead.
+const MARK = "#010203";
+const MARK_RGB = "rgb(1, 2, 3)";
+const clearSelectionColor = (sel) => {
+  const start = sel.getRangeAt(0).commonAncestorContainer;
+  const scope = (start.nodeType === 1 ? start : start.parentElement)?.closest(".editor");
+  if (!scope) return;
+  exec("foreColor", MARK);
+  const range = sel.rangeCount ? sel.getRangeAt(0) : null;
+  const ends = range && [range.startContainer, range.startOffset, range.endContainer, range.endOffset];
+  const marked = [...scope.querySelectorAll("span, font")].filter((el) => el.style.color === MARK_RGB || el.getAttribute("color") === MARK);
+  for (const el of marked) {
+    el.querySelectorAll("[style*='color'], font[color]").forEach(stripColor);
+    const body = el.closest("[data-block-id]");
+    const outer = el.parentElement?.closest("span[style*='color'], font[color]");
+    if (body?.style.color || (outer && body?.contains(outer))) {
+      el.removeAttribute("color");
+      el.style.color = "var(--paperInk)";
+      continue;
+    }
+    stripColor(el);
+    if (!el.attributes.length) el.replaceWith(...el.childNodes);
+  }
+  if (ends && ends[0].isConnected && ends[2].isConnected) {
+    try {
+      sel.setBaseAndExtent(...ends);
+    } catch {
+      /* the words are right either way; only the highlight would be lost */
+    }
+  }
 };
 
 const paintSelection = (hex) => {
   const sel = window.getSelection();
   if (!sel?.rangeCount || sel.isCollapsed) return;
+  if (!hex) return clearSelectionColor(sel);
   clearColorsIn(sel.getRangeAt(0));
-  if (hex) exec("foreColor", hex);
+  exec("foreColor", hex);
 };
 
 const textOf = (html) => plainText(html).trim();

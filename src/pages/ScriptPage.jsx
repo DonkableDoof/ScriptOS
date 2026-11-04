@@ -4,7 +4,7 @@ import ScriptDetails from "../components/ScriptDetails";
 import PrintView from "../components/PrintView";
 import Popover from "../components/Popover";
 import { useStore } from "../lib/store";
-import { TYPE_BY_KEY, scriptStats, formatPages, formatRuntime, isTv, characterName, blockMetrics } from "../lib/script";
+import { TYPE_BY_KEY, scriptStats, formatPages, formatRuntime, isTv, characterName, blockMetrics, renameCharacter } from "../lib/script";
 import { nextCastColor } from "../lib/colors";
 import Swatches from "../components/Swatches";
 import ScramblePane from "../components/ScramblePane";
@@ -19,6 +19,7 @@ import { toFountain, toPlainText, fileNameFor } from "../lib/fountain";
 import { saveTextFile } from "../lib/native";
 import { dayKey } from "../lib/activity";
 import { notify } from "../lib/notice";
+import { sfx } from "../lib/sound";
 import { useDocZoom } from "../lib/useDocZoom";
 
 // The everyday elements get a button; the rest live in the slash menu and hotkeys.
@@ -36,6 +37,9 @@ export default function ScriptPage({ scriptId, navigate }) {
   const [exportOpen, setExportOpen] = useState(false);
   const [sidebar, setSidebar] = useState(true);
   const [castMenu, setCastMenu] = useState(null);
+  const [renaming, setRenaming] = useState(null);
+  const castMemory = useRef({});
+  useEffect(() => setRenaming(null), [castMenu]);
   const castRefs = useRef({});
   const iconInput = useRef(null);
   const [shareOpen, setShareOpen] = useState(false);
@@ -79,6 +83,13 @@ export default function ScriptPage({ scriptId, navigate }) {
       if ((entry?.color || entry?.icon) && (present.has(name) || typing)) next[name] = entry;
       else changed = true;
     }
+    // undoing or redoing a rename brings back a name: it gets its colour and icon back too
+    for (const name of present) {
+      if (!next[name] && castMemory.current[name]) {
+        next[name] = castMemory.current[name];
+        changed = true;
+      }
+    }
     if (settings.autoCastColors) {
       for (const { name } of characters) {
         if (next[name]?.color) continue;
@@ -98,6 +109,24 @@ export default function ScriptPage({ scriptId, navigate }) {
     const next = { ...cast, [name]: entry };
     if (!Object.keys(entry).length) delete next[name];
     store.updateScript(scriptId, { cast: next });
+  };
+
+  // Enter in the rename box. In one step, so Ctrl+Z takes the whole rename back. Renaming to
+  // someone already in the script merges the two, and they keep the existing colour.
+  const applyRename = () => {
+    const oldName = castMenu;
+    const result = renameCharacter(blocks, oldName, renaming || "");
+    setCastMenu(null);
+    if (!result.name || result.name === oldName) return;
+    const entry = cast[oldName];
+    if (entry) {
+      castMemory.current[oldName] = entry;
+      castMemory.current[result.name] = cast[result.name] || entry;
+      store.updateScript(scriptId, { cast: { ...cast, [result.name]: cast[result.name] || entry } });
+    }
+    editorRef.current?.applyBlocks(result.blocks);
+    notify(`Renamed to ${result.name}`, { detail: `${result.lines} ${result.lines === 1 ? "line" : "lines"} changed. Ctrl+Z undoes it.` });
+    sfx.play("complete");
   };
 
   const pickIcon = async (file) => {
@@ -369,7 +398,14 @@ export default function ScriptPage({ scriptId, navigate }) {
                 Characters <span>{characters.length}</span>
               </div>
               {characters.map((c) => (
-                <div key={c.name} className="cast-item">
+                <div
+                  key={c.name}
+                  className="cast-item"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setCastMenu(c.name);
+                  }}
+                >
                   <button
                     ref={(node) => (castRefs.current[c.name] = node)}
                     className="cast-dot"
@@ -502,6 +538,29 @@ export default function ScriptPage({ scriptId, navigate }) {
       {castMenu && (
         <Popover anchorRef={{ current: castRefs.current[castMenu] }} width={214} className="card-menu" onClose={() => setCastMenu(null)}>
           <span className="menu-label">{castMenu}</span>
+          {renaming !== null && (
+            <div className="cast-rename">
+              <input
+                autoFocus
+                value={renaming}
+                maxLength={60}
+                aria-label={`New name for ${castMenu}`}
+                onFocus={(e) => e.target.select()}
+                onChange={(e) => setRenaming(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyRename();
+                  }
+                }}
+              />
+              <span className="cast-rename-hint">
+                {characters.some((c) => c.name === characterName(renaming) && c.name !== castMenu)
+                  ? `${characterName(renaming)} is already in this script. Enter merges them.`
+                  : "Press Enter to change it everywhere in this script."}
+              </span>
+            </div>
+          )}
           <Swatches
             value={cast[castMenu]?.color}
             noneLabel="No colour"
@@ -511,6 +570,9 @@ export default function ScriptPage({ scriptId, navigate }) {
             }}
           />
           <div className="menu-sep" />
+          <button className="menu-item" onClick={() => setRenaming(castMenu)}>
+            <span className="menu-icon">✎</span>Rename
+          </button>
           <button className="menu-item" onClick={() => iconInput.current?.click()}>
             <span className="menu-icon">↑</span>
             {cast[castMenu]?.icon ? "Replace Icon" : "Upload Icon"}

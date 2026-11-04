@@ -88,6 +88,52 @@ export const characterName = (text) =>
     .trim()
     .toUpperCase();
 
+// Renames a character through a script: their cue lines, and their name wherever it's
+// mentioned. Only capitalised mentions count, so renaming WILL leaves "I will go" alone.
+// Formatting is kept, and a line with nothing to change stays the same object.
+const titled = (s) => s.toLowerCase().replace(/(^|[\s'-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
+const eachText = (root, fn) => {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach(fn);
+};
+export function renameCharacter(blocks, oldName, typed) {
+  const clean = String(typed).replace(/\(.*?\)/g, "").replace(/\^$/, "").trim().replace(/\s+/g, " ");
+  const upper = clean.toUpperCase();
+  const display = clean === upper || clean === clean.toLowerCase() ? titled(clean) : clean;
+  const escaped = oldName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+");
+  const word = () => new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "giu");
+  let lines = 0;
+
+  const next = blocks.map((b) => {
+    if (b.type === "pagebreak" || !b.html) return b;
+    const cue = b.type === "character";
+    if (cue && characterName(plainText(b.html)) !== oldName) return b; // somebody else's name
+    const box = document.createElement("template");
+    box.innerHTML = b.html;
+    let changed = false;
+    eachText(box.content, (node) => {
+      const text = node.nodeValue.replace(word(), (m) => {
+        if (m === m.toLowerCase()) return m;
+        changed = true;
+        return cue || m === m.toUpperCase() ? upper : display;
+      });
+      if (text !== node.nodeValue) node.nodeValue = text;
+    });
+    let html = box.innerHTML;
+    // a cue with its name split across formatting: the name is rewritten whole, losing that
+    if (cue && !changed) {
+      html = escapeHtml(plainText(b.html).replace(word(), upper));
+      changed = html !== b.html;
+    }
+    if (!changed) return b;
+    lines += 1;
+    return { ...b, html };
+  });
+  return { blocks: next, lines, name: upper };
+}
+
 // Per-block numbers, cached on the block object itself. Blocks are replaced, never
 // mutated, so an unchanged block keeps its entry and stats stay cheap while typing.
 const cache = new WeakMap();

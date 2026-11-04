@@ -10,7 +10,10 @@ import { shrinkCast, shrinkIcon } from "./image";
 // they arrive, so when sharing stops they stay here while the server forgets the copy.
 // ---------------------------------------------------------------------------
 
-const fakeOn = () => import.meta.env.DEV && localStorage.getItem("scriptosFakeShare") === "1";
+// Decided once per page load: clearing the flag on a running page must not send its stand-in
+// ids and account to the real server.
+const FAKE = import.meta.env.DEV && localStorage.getItem("scriptosFakeShare") === "1";
+const fakeOn = () => FAKE;
 let fake = null;
 export const backend = async () => {
   if (fakeOn()) {

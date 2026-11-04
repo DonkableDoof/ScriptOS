@@ -407,6 +407,9 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .cast-dot[data-icon] { width: 22px; height: 22px; border-radius: 5px; overflow: hidden; }
 .cast-dot[data-icon]:hover { transform: scale(1.12); }
 .cast-dot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.cast-rename { display: flex; flex-direction: column; gap: 5px; padding: 2px 4px 8px; }
+.cast-rename input { width: 100%; }
+.cast-rename-hint { font-size: 11px; line-height: 1.35; color: var(--textDim); }
 .cast-lines { font-family: "DM Mono", monospace; font-size: 11px; color: var(--textDim); }
 .logline { font-size: 12.5px; line-height: 1.55; color: var(--textMuted); padding: 0 8px; font-style: italic; }
 
@@ -481,6 +484,7 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .block[data-type="dialogue"],
 .block[data-type="subtext"],
 .block[data-type="lyrics"] { margin-top: 0; }
+.block[data-type="lyrics"] { margin-top: calc(var(--lh) * 0.5); }
 .block[data-type="dialogue"] .block-body { margin-left: calc(10ch - var(--hit)); width: calc(35ch + var(--hit) * 2); }
 .block[data-type="lyrics"] .block-body { margin-left: calc(10ch - var(--hit)); width: calc(35ch + var(--hit) * 2); font-style: italic; }
 /* sung lines sit between musical notes, drawn rather than typed so they never get in the text */
@@ -1060,6 +1064,7 @@ body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-selec
   }
   @page :first { @top-right { content: none; } }
 
+  html { --paperInk: #000 !important; }
   html, body { background: #fff !important; color: #000 !important; }
   #root { display: none !important; }
   .print-root { display: block; font-family: "Courier Prime", "Courier New", Courier, monospace; font-size: 12pt; line-height: 12pt; color: #000; }
