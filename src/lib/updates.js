@@ -10,7 +10,7 @@ const REPO = "DonkableDoof/ScriptOS";
 export const RELEASES_URL = `https://github.com/${REPO}/releases/latest`;
 const EVERY = 30 * 60 * 1000;
 
-let state = { status: "idle", version: null, notes: "", progress: 0, error: "", installable: false, failed: false, attempt: 0 };
+let state = { status: "idle", version: null, notes: "", progress: 0, error: "", installable: false, failed: false };
 const listeners = new Set();
 const publish = (next) => {
   state = { ...state, ...next };
@@ -36,8 +36,8 @@ async function check() {
     const found = await findUpdate({ timeout: 15000 });
     if (found) {
       update = found;
-      // each check that finds it is another go, so a failed install gets retried later
-      publish({ status: "available", installable: true, version: found.version, notes: found.body || "", error: "", failed: false, attempt: state.attempt + 1 });
+      // each check that finds it asks again, so a failed install isn't the end of it
+      publish({ status: "available", installable: true, version: found.version, notes: found.body || "", error: "", failed: false });
       return;
     }
     update = null;
@@ -81,6 +81,17 @@ export async function installUpdate() {
     await relaunch();
   } catch (err) {
     publish({ status: "available", error: String(err?.message || err), failed: true });
+  }
+}
+
+// Leaving instead of updating. Everything is saved first.
+export async function exitApp() {
+  await flushAll();
+  if (isNative()) {
+    const { exit } = await import("@tauri-apps/plugin-process");
+    await exit(0);
+  } else {
+    window.close();
   }
 }
 

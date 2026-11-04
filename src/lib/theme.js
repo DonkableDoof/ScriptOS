@@ -91,8 +91,6 @@ export const DEFAULT_SETTINGS = {
   // your own named colours: { id, name, hex }
   customColors: [],
   typewriterScroll: false,
-  typewriterSounds: false,
-  typewriterBell: false,
   volume: 0.6,
   dailyGoal: 0,
   exportNotes: false,

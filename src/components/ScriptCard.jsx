@@ -1,11 +1,10 @@
 import { useRef } from "react";
 import Cover from "./Cover";
-import { FORMAT_BY_KEY, episodeLabel, formatPages, timeAgo } from "../lib/script";
+import { episodeLabel, formatPages, timeAgo } from "../lib/script";
 
 export default function ScriptCard({ script, stats, onOpen, onMenu }) {
   const menuRef = useRef(null);
-  const format = FORMAT_BY_KEY[script.format]?.short || "Script";
-  const ep = episodeLabel(script);
+  const chip = [episodeLabel(script), script.cloud && "☁", script.share && "Shared"].filter(Boolean).join(" · ");
 
   return (
     <div
@@ -22,11 +21,7 @@ export default function ScriptCard({ script, stats, onOpen, onMenu }) {
     >
       <div className="scard-cover">
         <Cover script={script} />
-        <span className="scard-chip">
-          {ep ? `${format} · ${ep}` : format}
-          {script.cloud ? " · ☁" : ""}
-          {script.share ? " · Shared" : ""}
-        </span>
+        {chip && <span className="scard-chip">{chip}</span>}
         <button
           ref={menuRef}
           className="scard-more"
@@ -38,11 +33,6 @@ export default function ScriptCard({ script, stats, onOpen, onMenu }) {
         >
           ⋯
         </button>
-        {script.cover && (
-          <div className="scard-overlay">
-            <span className="scard-overlay-title">{script.title}</span>
-          </div>
-        )}
       </div>
       <div className="scard-body">
         <span className="scard-title">{script.title || "Untitled Script"}</span>

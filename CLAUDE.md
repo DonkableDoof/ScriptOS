@@ -11,6 +11,27 @@ Data lives in IndexedDB (`src/lib/storage.js`), keyed `scripts`, `activity`, `se
   Also keep `src-tauri/Cargo.toml` `version` in step. `npm version patch --no-git-tag-version`
   updates package.json and package-lock.json together.
 
+## Commits — every finished change goes to GitHub
+
+Without being asked, once a request is finished and its checks pass: bump the version, commit
+everything to `main`, and push to `origin`. One commit per finished request, never half-done
+work. Look over `git status` first: no keys, tokens or stray files. If the push fails, say so.
+The title is `V<version>`. The body is written for the person reading the history, in this
+format, leaving out a section with nothing in it:
+
+```
+### Additions
+
+* Addition 1
+* Addition 2
+
+
+### Changes
+
+* Change 1
+* Change 2
+```
+
 ## Sync
 
 Scripts and scrambles a user uploads live in `cloud_items`, per account; nothing else leaves
@@ -21,8 +42,8 @@ per-machine and are never synced or backed up.
 
 ## Releases and updates
 
-The app updates itself from GitHub releases and installs automatically when it can
-(`src/lib/updates.js`, `components/UpdateGate.jsx`). To release: bump the version, run
+The app updates itself from GitHub releases. When an update can install, it opens to a
+screen offering only Update or Exit (`src/lib/updates.js`, `components/UpdateGate.jsx`). To release: bump the version, run
 `npm run app:release` in a terminal (it asks for the signing key's password, signs the build
 and writes `latest.json`), then attach the installer, its `.sig` file and `latest.json` from
 `src-tauri/target/release/bundle/nsis/` to a `v<version>` release. The private key must never be committed.

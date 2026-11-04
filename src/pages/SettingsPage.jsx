@@ -250,24 +250,6 @@ export default function SettingsPage({ navigate }) {
           <Setting title="Typewriter scrolling" hint="Keeps the line you are writing in the middle of the screen.">
             <Toggle on={settings.typewriterScroll} onChange={(typewriterScroll) => set({ typewriterScroll })} />
           </Setting>
-          <Setting title="Typing sounds" hint="The click of a mechanical keyboard for every key you press and release.">
-            <Toggle
-              on={settings.typewriterSounds}
-              onChange={(typewriterSounds) => {
-                set({ typewriterSounds });
-                if (typewriterSounds) sfx.play("key");
-              }}
-            />
-          </Setting>
-          <Setting title="Typewriter bell" hint="Rings when you press Enter to start a new line.">
-            <Toggle
-              on={settings.typewriterBell}
-              onChange={(typewriterBell) => {
-                set({ typewriterBell });
-                if (typewriterBell) sfx.play("bell");
-              }}
-            />
-          </Setting>
           <Setting title="Daily word goal" hint="Set to 0 to turn the goal off and hide it from the home page.">
             <input
               className="input-sm"

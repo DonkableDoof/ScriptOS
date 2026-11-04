@@ -716,8 +716,6 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         save();
         return;
       }
-      sfx.type("ret");
-      sfx.type("bell");
       const sel = window.getSelection();
       if (!sel.rangeCount) return;
       const range = sel.getRangeAt(0);
@@ -755,9 +753,6 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       return;
     }
 
-    // a held key repeats its keydown, but a real switch only clicks once
-    if ((key === "Backspace" || key === "Delete") && !e.repeat) sfx.type("backspace");
-
     if (key === "Backspace") {
       const sel = window.getSelection();
       if (sel.rangeCount && sel.getRangeAt(0).collapsed && caretOffset(el) === 0) {
@@ -776,16 +771,6 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       }
       return;
     }
-
-    if (e.repeat) return;
-    if (key === " ") sfx.type("space");
-    else if (key.length === 1) sfx.type("key");
-  };
-
-  const onKeyUp = (e) => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === " " || e.key === "Enter" || e.key === "Backspace" || e.key === "Delete") sfx.type("bigUp");
-    else if (e.key.length === 1) sfx.type("keyUp");
   };
 
   const onPaste = (e) => {
@@ -916,7 +901,6 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
           data-ghost={ghost || undefined}
           onInput={onInput}
           onKeyDown={onKeyDown}
-          onKeyUp={onKeyUp}
           onPaste={onPaste}
           onFocus={() => {
             api.activate(block.id);

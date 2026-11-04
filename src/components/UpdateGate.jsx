@@ -1,51 +1,61 @@
-import { useEffect, useRef } from "react";
-import { installUpdate, RELEASES_URL, useUpdate } from "../lib/updates";
+import { exitApp, installUpdate, RELEASES_URL, useUpdate } from "../lib/updates";
 import { openExternal } from "../lib/native";
 
-// Updates are mandatory whenever one can actually be installed: the app waits behind this
-// screen and installs straight away. It never interrupts writing: an update found while
-// a script is open waits until you're back on the home page or next open the app. If the
-// install fails or you're offline, the app carries on and tries again later.
+// Updates are mandatory whenever one can actually be installed: on the home page, which is
+// where the app opens, you either update or exit. It never interrupts writing: an update
+// found while a script is open waits until you're back on the home page. If an install
+// fails the app carries on rather than locking you out of your scripts, and asks again later.
 export function UpdateGate({ page }) {
   const update = useUpdate();
-  const begun = useRef(null);
-  const due = update.installable && !update.failed && (page === "home" || update.status === "installing");
+  const installing = update.status === "installing";
+  if (!update.installable || update.failed || !(installing || page === "home")) return null;
+  if (!installing && update.status !== "available") return null;
 
-  useEffect(() => {
-    const go = `${update.version}:${update.attempt}`;
-    if (due && update.status === "available" && begun.current !== go) {
-      begun.current = go;
-      installUpdate();
-    }
-  }, [due, update.status, update.version, update.attempt]);
-
-  if (!due) return null;
   return (
-    <div className="update-gate" role="alertdialog" aria-label="Updating ScriptOS">
+    <div className="update-gate" role="alertdialog" aria-modal="true" aria-label={installing ? "Updating ScriptOS" : "Update required"}>
       <div className="update-card">
         <img src="/icon.png" alt="" width="56" height="56" />
-        <h2>Updating to ScriptOS {update.version}</h2>
-        <p>Your work is saved. ScriptOS will restart by itself when this finishes.</p>
-        <div className="update-bar">
-          <span style={{ width: `${update.progress || 0}%` }} />
-        </div>
+        {installing ? (
+          <>
+            <h2>Updating to ScriptOS {update.version}</h2>
+            <p>Your work is saved. ScriptOS will restart by itself when this finishes.</p>
+            <div className="update-bar">
+              <span style={{ width: `${update.progress || 0}%` }} />
+            </div>
+          </>
+        ) : (
+          <>
+            <h2>Update Required</h2>
+            <p>ScriptOS {update.version} is available. You need to install it to keep using ScriptOS. Your work is saved either way.</p>
+            <div className="update-actions">
+              <button className="btn" onClick={exitApp}>
+                Exit
+              </button>
+              <button className="btn btn-primary" autoFocus onClick={installUpdate}>
+                Update
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
 }
 
-// The notice on the home page, for an update that hasn't installed yet.
+// The notice on the home page, for an update that can't go through the screen above: the
+// install failed, or this release has to be downloaded.
 export function UpdateNotice() {
   const update = useUpdate();
   if (update.status !== "available" || !update.version) return null;
   if (update.installable) {
+    if (!update.failed) return null;
     return (
-      <div className="update-notice" data-bad={update.failed || undefined}>
+      <div className="update-notice" data-bad>
         <span>
-          <b>ScriptOS {update.version} is available.</b> {update.failed ? `The update didn't finish: ${update.error}` : "It installs automatically."}
+          <b>ScriptOS {update.version} didn't install.</b> {update.error}
         </span>
         <button className="btn btn-primary btn-sm" onClick={installUpdate}>
-          {update.failed ? "Try Again" : "Install Now"}
+          Try Again
         </button>
       </div>
     );

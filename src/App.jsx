@@ -51,8 +51,6 @@ function Router() {
   useLayoutEffect(() => {
     applyTheme(settings);
     sfx.setVolume(settings.volume);
-    sfx.setTypewriter(settings.typewriterSounds);
-    sfx.setBell(settings.typewriterBell);
   }, [settings]);
 
   const navigate = useCallback((next) => {
