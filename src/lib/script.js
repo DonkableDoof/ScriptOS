@@ -89,9 +89,9 @@ export const characterName = (text) =>
     .toUpperCase();
 
 // Renames a character through a script: their cue lines, and their name wherever it's
-// mentioned. Where case shows, only capitalised mentions count, so renaming WILL leaves
-// "I will go" alone. Lines drawn in capitals (see text-transform in styles.css) can be typed
-// in any case and all look like the name, so there every match counts.
+// mentioned, whatever case it's in, as whole words only. A mention in capitals stays in
+// capitals, as does anything on a line drawn in capitals (see text-transform in styles.css);
+// otherwise it takes the new name as written, so "rosa" becomes "Maria Luz".
 // Formatting is kept, and a line with nothing to change stays the same object.
 const SHOWN_IN_CAPITALS = new Set(["scene", "character", "transition", "shot", "act", "heading", "sequence"]);
 const titled = (s) => s.toLowerCase().replace(/(^|[\s'-])(\p{L})/gu, (m, a, b) => a + b.toUpperCase());
@@ -119,7 +119,6 @@ export function renameCharacter(blocks, oldName, typed) {
     let changed = false;
     eachText(box.content, (node) => {
       const text = node.nodeValue.replace(word(), (m) => {
-        if (!capitals && m === m.toLowerCase()) return m;
         changed = true;
         return capitals || m === m.toUpperCase() ? upper : display;
       });
