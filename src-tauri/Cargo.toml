@@ -1,6 +1,6 @@
 [package]
 name = "scriptos"
-version = "1.10.5"
+version = "1.10.6"
 description = "ScriptOS"
 edition = "2021"
 

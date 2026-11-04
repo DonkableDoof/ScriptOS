@@ -53,3 +53,8 @@ desktop.ini
 
 # Local data backups
 scriptos-backup-*.json
+
+# Claude
+.claude/
+CLAUDE.md
+.mcp.json
