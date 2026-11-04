@@ -82,3 +82,20 @@ export const bestDay = (activity) => {
   }
   return best && best.words > 0 ? best : null;
 };
+
+// This device's days plus every other device's ({ deviceId: days }). Each device's
+// day is floored at zero first, the same as the stats do, so a device that only
+// cut words one day doesn't eat into what another wrote.
+export const mergeActivity = (own, remote = {}) => {
+  const out = {};
+  const add = (days) => {
+    for (const [key, day] of Object.entries(days || {})) {
+      const p = positive(day);
+      const cur = out[key] || { words: 0, lines: 0 };
+      out[key] = { words: cur.words + p.words, lines: cur.lines + p.lines };
+    }
+  };
+  add(own);
+  Object.values(remote).forEach(add);
+  return out;
+};

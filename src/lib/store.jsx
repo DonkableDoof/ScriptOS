@@ -2,7 +2,8 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState } from 
 import { usePersistentState, boot, uid } from "./storage";
 import { DEFAULT_SETTINGS } from "./theme";
 import { newScript, newScramble, totalsOf, needsMigration, migrateScript } from "./script";
-import { addActivity } from "./activity";
+import { addActivity, mergeActivity } from "./activity";
+import { asLocal, asUploaded } from "./cloud";
 
 const StoreContext = createContext(null);
 
@@ -40,6 +41,13 @@ function Store({ snapshot, children }) {
   const [scrambles, setScrambles] = usePersistentState("scrambles", [], snapshot);
   const [activity, setActivity] = usePersistentState("activity", {}, snapshot);
   const [settings, setSettings] = usePersistentState("settings", DEFAULT_SETTINGS, snapshot);
+  // Sync (lib/cloud.js): this device's own id and name, never synced or backed up; what
+  // it last synced; what was deleted, so that reaches the other devices; and their writing
+  // stats, kept apart so nothing is counted twice.
+  const [device, setDevice] = usePersistentState("device", null, snapshot);
+  const [tombstones, setTombstones] = usePersistentState("tombstones", {}, snapshot);
+  const [remoteActivity, setRemoteActivity] = usePersistentState("remoteActivity", {}, snapshot);
+  const [cloudState, setCloudState] = usePersistentState("cloudState", { userId: null, items: {} }, snapshot);
 
   // Edits arrive once per keystroke; the word delta is worked out against the
   // latest list here rather than inside a state updater, which StrictMode runs twice.
@@ -57,6 +65,8 @@ function Store({ snapshot, children }) {
     if (scripts.some(needsMigration)) setScripts((list) => list.map(migrateScript));
   }, []);
 
+  const mergedActivity = useMemo(() => mergeActivity(activity, remoteActivity), [activity, remoteActivity]);
+
   const value = useMemo(() => {
     const patchScript = (id, changes) =>
       setScripts((list) => list.map((s) => (s.id === id ? { ...s, ...changes, updatedAt: Date.now() } : s)));
@@ -73,10 +83,76 @@ function Store({ snapshot, children }) {
       if (dw || dl) setActivity((a) => addActivity(a, dw, dl));
     };
 
+    const bury = (id) => setTombstones((t) => ({ ...t, [id]: Date.now() }));
+
     return {
       scripts,
       scrambles,
-      activity,
+      // what the stats show: this device's writing plus every linked device's
+      activity: mergedActivity,
+      ownActivity: activity,
+      device,
+      tombstones,
+      remoteActivity,
+      setDevice,
+      cloudState,
+      // What a sync round worked out. It keeps its own timestamps and isn't counted as
+      // writing done here. `seen` is what the round started from: anything edited while it
+      // was running is left alone, and the next round sorts it out.
+      applyCloud: (userId, r, seen) => {
+        const items = { ...r.state };
+        const merge = (kind, list) => {
+          let next = list;
+          for (const x of r.removes) if (x.kind === kind) next = next.filter((i) => i.id !== x.id);
+          for (const x of r.localize) if (x.kind === kind) next = next.map((i) => (i.id === x.id ? asLocal(i) : i));
+          for (const x of r.upserts) {
+            if (x.kind !== kind) continue;
+            const cur = next.find((i) => i.id === x.item.id);
+            if (cur && seen && cur !== seen.get(cur.id)) {
+              delete items[cur.id];
+              continue;
+            }
+            next = cur ? next.map((i) => (i.id === x.item.id ? x.item : i)) : [x.item, ...next];
+          }
+          for (const x of r.conflicts) if (x.kind === kind) next = [x.item, ...next];
+          return next;
+        };
+        const nextScripts = merge("script", scriptsRef.current);
+        const nextScrambles = merge("scramble", scramblesRef.current);
+        if (nextScripts !== scriptsRef.current) {
+          scriptsRef.current = nextScripts;
+          setScripts(nextScripts);
+        }
+        if (nextScrambles !== scramblesRef.current) {
+          scramblesRef.current = nextScrambles;
+          setScrambles(nextScrambles);
+        }
+        if (r.buried.length) {
+          setTombstones((t) => {
+            const rest = { ...t };
+            for (const id of r.buried) delete rest[id];
+            return rest;
+          });
+        }
+        setCloudState({ userId, items });
+        setRemoteActivity(r.remoteActivity);
+      },
+      // Uploading doesn't count as editing, so these leave updatedAt alone.
+      markUploaded: (kind, id, userId) => {
+        const mark = (list) => list.map((i) => (i.id === id ? asUploaded(i, userId) : i));
+        if (kind === "script") setScripts(mark);
+        else setScrambles(mark);
+      },
+      markLocal: (kind, id) => {
+        const mark = (list) => list.map((i) => (i.id === id ? asLocal(i) : i));
+        if (kind === "script") setScripts(mark);
+        else setScrambles(mark);
+        setCloudState((c) => {
+          const items = { ...c.items };
+          delete items[id];
+          return { ...c, items };
+        });
+      },
       settings: { ...DEFAULT_SETTINGS, ...settings },
       updateSettings: (changes) => setSettings((prev) => ({ ...DEFAULT_SETTINGS, ...prev, ...changes })),
 
@@ -110,7 +186,10 @@ function Store({ snapshot, children }) {
         patchScramble(id, { blocks });
         record(current.blocks, blocks);
       },
-      deleteScramble: (id) => setScrambles((list) => list.filter((s) => s.id !== id)),
+      deleteScramble: (id) => {
+        setScrambles((list) => list.filter((s) => s.id !== id));
+        bury(id);
+      },
 
       duplicateScript: (id) => {
         const source = scriptsRef.current.find((s) => s.id === id);
@@ -118,6 +197,13 @@ function Store({ snapshot, children }) {
         const now = Date.now();
         const copy = {
           ...source,
+          // a copy isn't shared, and the comments belong to the original
+          share: null,
+          comments: [],
+          suggestions: [],
+          reviewers: {},
+          cloud: undefined,
+          cloudOwner: undefined,
           id: uid(),
           title: `${source.title} (Copy)`,
           blocks: source.blocks.map((b) => ({ ...b, id: uid() })),
@@ -127,9 +213,12 @@ function Store({ snapshot, children }) {
         setScripts((list) => [copy, ...list]);
         return copy;
       },
-      deleteScript: (id) => setScripts((list) => list.filter((s) => s.id !== id)),
+      deleteScript: (id) => {
+        setScripts((list) => list.filter((s) => s.id !== id));
+        bury(id);
+      },
     };
-  }, [scripts, scrambles, activity, settings, setScripts, setScrambles, setActivity, setSettings]);
+  }, [scripts, scrambles, activity, mergedActivity, settings, device, tombstones, remoteActivity, cloudState]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }

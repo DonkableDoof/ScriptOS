@@ -77,8 +77,16 @@ export const DEFAULT_SETTINGS = {
   editorSize: 16,
   // the script page's zoom, from Ctrl+scroll (1 = 100%)
   docZoom: 1,
+  // a scramble open beside a script: which side, how wide, and which one per script
+  dualSide: "right",
+  dualWidth: 400,
+  dualOpen: {},
   sceneNumbers: true,
   autocomplete: true,
+  spellcheck: true,
+  spellLang: "en-GB",
+  // words you've added: stored lower case
+  dictionary: [],
   autoCastColors: false,
   // your own named colours: { id, name, hex }
   customColors: [],

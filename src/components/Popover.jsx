@@ -37,7 +37,7 @@ export default function Popover({ anchorRef, onClose, width, align = "left", cla
     const watch = typeof ResizeObserver === "function" ? new ResizeObserver(place) : null;
     if (watch) {
       if (ref.current) watch.observe(ref.current);
-      if (anchorRef.current) watch.observe(anchorRef.current);
+      if (anchorRef.current instanceof Element) watch.observe(anchorRef.current);
     }
     return () => {
       window.removeEventListener("resize", place);

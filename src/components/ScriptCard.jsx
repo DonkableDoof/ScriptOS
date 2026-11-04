@@ -22,7 +22,11 @@ export default function ScriptCard({ script, stats, onOpen, onMenu }) {
     >
       <div className="scard-cover">
         <Cover script={script} />
-        <span className="scard-chip">{ep ? `${format} · ${ep}` : format}</span>
+        <span className="scard-chip">
+          {ep ? `${format} · ${ep}` : format}
+          {script.cloud ? " · ☁" : ""}
+          {script.share ? " · Shared" : ""}
+        </span>
         <button
           ref={menuRef}
           className="scard-more"

@@ -18,7 +18,10 @@ export default function ScramblesPanel({ scrambles, onOpen, onNew, onDelete }) {
       <div className="scrambles">
         {list.map((s) => (
           <div key={s.id} className="scramble" role="button" tabIndex={0} onClick={() => onOpen(s)} onKeyDown={(e) => e.key === "Enter" && onOpen(s)}>
-            <span className="scramble-title">{scrambleTitle(s)}</span>
+            <span className="scramble-title">
+              {s.cloud && <span className="scramble-cloud" title="Uploaded to your account">☁ </span>}
+              {scrambleTitle(s)}
+            </span>
             <span className="scramble-meta">
               {totalsOf(s.blocks).words.toLocaleString()} words · {timeAgo(s.updatedAt)}
             </span>
@@ -39,7 +42,7 @@ export default function ScramblesPanel({ scrambles, onOpen, onNew, onDelete }) {
       {confirm && (
         <Confirm
           title="Delete Scramble"
-          body={`“${scrambleTitle(confirm)}” will be deleted. This can't be undone.`}
+          body={`“${scrambleTitle(confirm)}” will be deleted${confirm.cloud ? " from all your devices" : ""}. This can't be undone.`}
           confirmLabel="Delete"
           danger
           onClose={() => setConfirm(null)}

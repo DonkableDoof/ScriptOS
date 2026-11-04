@@ -50,6 +50,20 @@ export const coverGeometry = (img, frameW, frameH, zoom) => {
   return { w, h, slackX: w - frameW, slackY: h - frameH };
 };
 
+// A character's icon: a small square from the middle of the picture, kept as PNG so
+// transparency survives.
+const ICON_SIZE = 96;
+export function renderIcon(img) {
+  const canvas = document.createElement("canvas");
+  canvas.width = ICON_SIZE;
+  canvas.height = ICON_SIZE;
+  const ctx = canvas.getContext("2d");
+  const { w, h, slackX, slackY } = coverGeometry(img, ICON_SIZE, ICON_SIZE, 1);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, -slackX / 2, -slackY / 2, w, h);
+  return canvas.toDataURL("image/png");
+}
+
 export function renderCover(img, { zoom = 1, x = 0, y = 0 }) {
   const canvas = document.createElement("canvas");
   canvas.width = COVER_W;

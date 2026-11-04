@@ -19,6 +19,14 @@ fn open_url(url: String) -> Result<(), String> {
     open::that(&url).map_err(|e| format!("Could not open {}: {}", url, e))
 }
 
+// The name a device goes by on your account, until you change it.
+#[tauri::command]
+fn device_name() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_else(|_| "This device".into())
+}
+
 // Google Docs import. The webview can't fetch docs.google.com (no CORS), so the
 // document is downloaded here as .docx and parsed by the frontend. Only a document
 // id is accepted, so this can't be pointed anywhere else.
@@ -69,7 +77,9 @@ fn main() {
                 .build(),
         )
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![write_text_file, open_url, fetch_google_doc])
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![write_text_file, open_url, fetch_google_doc, device_name])
         .setup(|app| {
             // If the frontend never gets far enough to show the window, do it anyway
             // so the app is not left running invisibly.

@@ -5,13 +5,16 @@ import { sfx } from "./lib/sound";
 import { runStagger } from "./lib/stagger";
 import { flushAll } from "./lib/storage";
 import { requestPersistence } from "./lib/backup";
-import { holdCloseUntilSaved, openExternal, revealWindow } from "./lib/native";
+import { holdCloseUntilSaved, openExternal, revealWindow, toggleFullscreen } from "./lib/native";
 import { NOTICE_EVENT } from "./lib/notice";
 import Home from "./pages/Home";
 import ScriptPage from "./pages/ScriptPage";
 import ScramblePage from "./pages/ScramblePage";
+import SharedPage from "./pages/SharedPage";
 import SettingsPage from "./pages/SettingsPage";
 import SaveGuard from "./components/SaveGuard";
+import SyncAgent from "./components/SyncAgent";
+import { UpdateGate } from "./components/UpdateGate";
 
 const keyOf = (r) => `${r.page}:${r.id || ""}`;
 
@@ -79,9 +82,12 @@ function Router() {
       {route.page === "home" && <Home navigate={navigate} />}
       {route.page === "script" && <ScriptPage key={route.id} scriptId={route.id} navigate={navigate} />}
       {route.page === "scramble" && <ScramblePage key={route.id} scrambleId={route.id} navigate={navigate} />}
+      {route.page === "shared" && <SharedPage key={route.id} shareId={route.id} navigate={navigate} />}
       {route.page === "settings" && <SettingsPage navigate={navigate} />}
       <Notices />
       <SaveGuard />
+      <SyncAgent />
+      <UpdateGate page={route.page} />
     </div>
   );
 }
@@ -121,6 +127,16 @@ export default function App() {
     };
     document.addEventListener("contextmenu", onMenu);
     return () => document.removeEventListener("contextmenu", onMenu);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== "F11") return;
+      e.preventDefault();
+      toggleFullscreen().catch(() => {});
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   // Closing the window must not outrun the last save.

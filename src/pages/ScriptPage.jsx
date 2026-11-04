@@ -7,6 +7,14 @@ import { useStore } from "../lib/store";
 import { TYPE_BY_KEY, scriptStats, formatPages, formatRuntime, isTv, characterName, blockMetrics } from "../lib/script";
 import { nextCastColor } from "../lib/colors";
 import Swatches from "../components/Swatches";
+import ScramblePane from "../components/ScramblePane";
+import ShareDialog from "../components/ShareDialog";
+import CommentsPanel from "../components/CommentsPanel";
+import ChangeRow from "../components/ChangeRow";
+import CloudButton from "../components/CloudButton";
+import { htmlText, placeChanges } from "../lib/suggest";
+import { useOwnerShare } from "../lib/useOwnerShare";
+import { loadImageFile, renderIcon } from "../lib/image";
 import { toFountain, toPlainText, fileNameFor } from "../lib/fountain";
 import { saveTextFile } from "../lib/native";
 import { dayKey } from "../lib/activity";
@@ -29,6 +37,11 @@ export default function ScriptPage({ scriptId, navigate }) {
   const [sidebar, setSidebar] = useState(true);
   const [castMenu, setCastMenu] = useState(null);
   const castRefs = useRef({});
+  const iconInput = useRef(null);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [sideTab, setSideTab] = useState("outline");
+  const [focusBlock, setFocusBlock] = useState(null);
+  const owner = useOwnerShare(script, store);
 
   const stats = useMemo(() => (script ? scriptStats(script) : null), [script]);
   const onChange = useCallback((blocks) => store.updateBlocks(scriptId, blocks), [store.updateBlocks, scriptId]);
@@ -53,8 +66,9 @@ export default function ScriptPage({ scriptId, navigate }) {
       .sort((a, b) => b.lines - a.lines || a.name.localeCompare(b.name));
   }, [blocks, typing, stats]);
 
-  // Colours belong to characters still in the script: a character who's been cut
-  // loses theirs, and with the setting on a new one gets the next free colour.
+  // Colours and icons belong to characters still in the script: one who's been cut
+  // loses theirs, and with the setting on a new one gets the next free colour. Nothing
+  // is removed while a cue is being typed, as it passes through other names on the way.
   const namesKey = characters.map((c) => c.name).join("|");
   useEffect(() => {
     if (!script) return;
@@ -62,26 +76,74 @@ export default function ScriptPage({ scriptId, navigate }) {
     const next = {};
     let changed = false;
     for (const [name, entry] of Object.entries(cast)) {
-      if (entry?.color && present.has(name)) next[name] = entry;
+      if ((entry?.color || entry?.icon) && (present.has(name) || typing)) next[name] = entry;
       else changed = true;
     }
     if (settings.autoCastColors) {
       for (const { name } of characters) {
-        if (next[name]) continue;
-        next[name] = { color: nextCastColor(Object.values(next).map((c) => c.color)) };
+        if (next[name]?.color) continue;
+        next[name] = { ...next[name], color: nextCastColor(Object.values(next).map((c) => c.color).filter(Boolean)) };
         changed = true;
       }
     }
     if (changed) store.updateScript(scriptId, { cast: next });
-  }, [namesKey, settings.autoCastColors]);
+  }, [namesKey, settings.autoCastColors, typing?.id]);
 
   const { zoom, resetZoom } = useDocZoom();
 
-  const setCastColor = (name, color) => {
-    const next = { ...cast };
-    if (color) next[name] = { color };
-    else delete next[name];
+  const setCast = (name, changes) => {
+    const entry = { ...cast[name], ...changes };
+    if (!entry.color) delete entry.color;
+    if (!entry.icon) delete entry.icon;
+    const next = { ...cast, [name]: entry };
+    if (!Object.keys(entry).length) delete next[name];
     store.updateScript(scriptId, { cast: next });
+  };
+
+  const pickIcon = async (file) => {
+    const name = castMenu;
+    try {
+      setCast(name, { icon: renderIcon(await loadImageFile(file)) });
+      setCastMenu(null);
+    } catch (err) {
+      notify("That icon didn't work", { detail: err.message, tone: "bad" });
+    }
+  };
+
+  // Dual view: a scramble open beside this script, remembered per script.
+  const paneScramble = store.scrambles.find((s) => s.id === settings.dualOpen?.[scriptId]);
+  const [paneWidth, setPaneWidth] = useState(settings.dualWidth || 400);
+  const side = settings.dualSide === "left" ? "left" : "right";
+  const showPane = (id) => store.updateSettings({ dualOpen: { ...settings.dualOpen, [scriptId]: id } });
+  const closePane = () => {
+    const open = { ...settings.dualOpen };
+    delete open[scriptId];
+    store.updateSettings({ dualOpen: open });
+  };
+  const togglePane = () => {
+    if (paneScramble) return closePane();
+    const recent = [...store.scrambles].sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    showPane((recent || store.addScramble()).id);
+  };
+  const dragDivider = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = paneWidth;
+    let width = startW;
+    const onMove = (ev) => {
+      const delta = (ev.clientX - startX) / (settings.uiScale || 1);
+      width = Math.max(280, Math.min(window.innerWidth - 420, startW + (side === "right" ? -delta : delta)));
+      setPaneWidth(width);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("is-resizing");
+      store.updateSettings({ dualWidth: width });
+    };
+    document.body.classList.add("is-resizing");
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
   };
 
   // Names to suggest beyond this script's own lines: everyone from the other
@@ -111,6 +173,27 @@ export default function ScriptPage({ scriptId, navigate }) {
       </div>
     );
   }
+
+  // Comments left by readers. They live on the script, shared or not.
+  const comments = script.comments || [];
+  const suggestions = script.suggestions || [];
+  const hasComments = comments.length > 0 || suggestions.length > 0 || Boolean(owner.share);
+  const acceptSuggestions = (list) => owner.acceptChanges(list, (next) => editorRef.current?.applyBlocks(next));
+  const acceptSuggestion = (c) => acceptSuggestions([c]);
+  const rejectSuggestion = (c) => owner.rejectChanges([c]);
+  const staleLines = new Set(
+    suggestions.filter((c) => c.op !== "insert" && htmlText(script.blocks.find((b) => b.id === c.line)?.html) !== htmlText(c.baseHtml)).map((c) => c.id)
+  );
+  const changesByLine = placeChanges(script.blocks, script.blocks, suggestions);
+  const changeUi = { people: script.reviewers || {}, canDecide: true, staleLines, onAccept: acceptSuggestion, onReject: rejectSuggestion };
+  const jumpToChange = (c) => {
+    const id = Object.keys(changesByLine).find((line) => changesByLine[line].includes(c));
+    if (id) setJump({ id, showChange: true, t: Date.now() });
+  };
+  const openComments = comments.filter((c) => !c.resolved).length;
+  const blockOrder = Object.fromEntries(script.blocks.map((b, i) => [b.id, i]));
+  const commentCounts = {};
+  for (const c of comments) if (c.blockId && !c.resolved) commentCounts[c.blockId] = (commentCounts[c.blockId] || 0) + 1;
 
   const activeBlock = script.blocks.find((b) => b.id === activeId);
   const activeType = activeBlock?.type || null;
@@ -164,11 +247,19 @@ export default function ScriptPage({ scriptId, navigate }) {
           <button className="btn btn-ghost" onClick={() => setSidebar((v) => !v)} title="Show or hide the scene list">
             {sidebar ? "Hide Outline" : "Show Outline"}
           </button>
+          <button className="btn btn-ghost" data-on={Boolean(paneScramble)} onClick={togglePane} title="Open a scramble beside this script">
+            {paneScramble ? "Close Scramble" : "Open Scramble"}
+          </button>
           <button className="btn btn-ghost" onClick={() => setDetails(true)}>
             Details
           </button>
           <button ref={exportRef} className="btn" onClick={() => setExportOpen((v) => !v)}>
             Export ▾
+          </button>
+          <CloudButton kind="script" item={script} />
+          <button className="btn share-btn" data-on={Boolean(owner.share)} onClick={() => setShareOpen(true)} title={owner.share ? `Shared · code ${owner.share.code}` : "Let other people read this script and leave comments"}>
+            {owner.share ? "Shared" : "Share"}
+            {owner.requests.length > 0 && <span className="share-count">{owner.requests.length}</span>}
           </button>
           <button className="btn btn-settings" onClick={() => navigate({ page: "settings" })} aria-label="Settings" title="Settings">
             ⚙
@@ -176,9 +267,78 @@ export default function ScriptPage({ scriptId, navigate }) {
         </div>
       </header>
 
-      <div className="script-layout" data-sidebar={sidebar}>
+      <div
+        className="script-layout"
+        data-sidebar={sidebar}
+        data-dual={Boolean(paneScramble) || undefined}
+        data-side={side}
+        style={
+          paneScramble
+            ? {
+                gridTemplateColumns: [
+                  sidebar ? "250px" : "",
+                  side === "left" ? `${paneWidth}px 7px minmax(0, 1fr)` : `minmax(0, 1fr) 7px ${paneWidth}px`,
+                ].join(" "),
+              }
+            : undefined
+        }
+      >
         {sidebar && (
           <aside className="sidebar">
+            {hasComments && (
+              <div className="segmented sidebar-tabs">
+                <button type="button" data-on={sideTab === "outline"} onClick={() => setSideTab("outline")}>
+                  Outline
+                </button>
+                <button type="button" data-on={sideTab === "comments"} onClick={() => setSideTab("comments")}>
+                  Comments {openComments > 0 ? openComments : ""}
+                </button>
+                <button type="button" data-on={sideTab === "changes"} onClick={() => setSideTab("changes")}>
+                  Changes {suggestions.length > 0 ? suggestions.length : ""}
+                </button>
+              </div>
+            )}
+            {hasComments && sideTab === "changes" ? (
+              <div className="comments">
+                {suggestions.length > 1 && (
+                  <div className="changes-all">
+                    <button className="btn btn-sm" onClick={() => acceptSuggestions(suggestions)}>
+                      Accept All
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => owner.rejectChanges(suggestions)}>
+                      Reject All
+                    </button>
+                  </div>
+                )}
+                {suggestions.map((c) => (
+                  <ChangeRow
+                    key={c.id}
+                    change={c}
+                    person={script.reviewers?.[c.authorId]}
+                    canDecide
+                    stale={staleLines.has(c.id)}
+                    onAccept={acceptSuggestion}
+                    onReject={rejectSuggestion}
+                    onJump={jumpToChange}
+                  />
+                ))}
+              </div>
+            ) : hasComments && sideTab === "comments" ? (
+              <CommentsPanel
+                comments={comments}
+                people={script.reviewers || {}}
+                order={blockOrder}
+                canManage
+                focusId={focusBlock}
+                onJump={(id) => {
+                  setFocusBlock(id);
+                  setJump({ id, t: Date.now() });
+                }}
+                onResolve={owner.resolveComment}
+                onDelete={owner.deleteComment}
+              />
+            ) : (
+              <>
             <div className="sidebar-section">
               <div className="sidebar-title">
                 Scenes <span>{stats.scenes.length}</span>
@@ -213,12 +373,15 @@ export default function ScriptPage({ scriptId, navigate }) {
                   <button
                     ref={(node) => (castRefs.current[c.name] = node)}
                     className="cast-dot"
-                    data-none={!cast[c.name]?.color || undefined}
+                    data-none={(!cast[c.name]?.color && !cast[c.name]?.icon) || undefined}
+                    data-icon={cast[c.name]?.icon ? true : undefined}
                     style={cast[c.name]?.color ? { background: cast[c.name].color } : undefined}
-                    title="Colour this character's lines"
-                    aria-label={`Colour for ${c.name}`}
+                    title="Colour and icon for this character"
+                    aria-label={`Colour and icon for ${c.name}`}
                     onClick={() => setCastMenu(c.name)}
-                  />
+                  >
+                    {cast[c.name]?.icon && <img src={cast[c.name].icon} alt="" draggable={false} />}
+                  </button>
                   <span className="cast-name" style={cast[c.name]?.color ? { color: cast[c.name].color } : undefined}>
                     {c.name}
                   </span>
@@ -232,10 +395,12 @@ export default function ScriptPage({ scriptId, navigate }) {
                 <p className="logline">{script.logline}</p>
               </div>
             )}
+              </>
+            )}
           </aside>
         )}
 
-        <main className="script-main">
+        <main className="script-main" data-scroller={paneScramble ? true : undefined}>
           <div className="format-bar" onMouseDown={(e) => e.target.closest("button") && e.preventDefault()}>
             {BAR.map((key) => {
               const t = TYPE_BY_KEY[key];
@@ -275,9 +440,31 @@ export default function ScriptPage({ scriptId, navigate }) {
               jump={jump}
               cast={cast}
               known={known}
+              commentCounts={commentCounts}
+              changesByLine={changesByLine}
+              changeUi={changeUi}
+              onCommentBadge={(id) => {
+                setSidebar(true);
+                setSideTab("comments");
+                setFocusBlock(id);
+              }}
             />
           </div>
         </main>
+
+        {paneScramble && (
+          <>
+            <div className="pane-divider" role="separator" aria-orientation="vertical" title="Drag to resize" onPointerDown={dragDivider} />
+            <ScramblePane
+              scramble={paneScramble}
+              side={side}
+              onPick={showPane}
+              onSwap={() => store.updateSettings({ dualSide: side === "right" ? "left" : "right" })}
+              onOpenFull={() => navigate({ page: "scramble", id: paneScramble.id })}
+              onClose={closePane}
+            />
+          </>
+        )}
       </div>
 
       <footer className="statusbar">
@@ -319,12 +506,41 @@ export default function ScriptPage({ scriptId, navigate }) {
             value={cast[castMenu]?.color}
             noneLabel="No colour"
             onPick={(hex) => {
-              setCastColor(castMenu, hex);
+              setCast(castMenu, { color: hex });
               setCastMenu(null);
             }}
           />
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => iconInput.current?.click()}>
+            <span className="menu-icon">↑</span>
+            {cast[castMenu]?.icon ? "Replace Icon" : "Upload Icon"}
+          </button>
+          {cast[castMenu]?.icon && (
+            <button
+              className="menu-item"
+              onClick={() => {
+                setCast(castMenu, { icon: null });
+                setCastMenu(null);
+              }}
+            >
+              <span className="menu-icon">×</span>Remove Icon
+            </button>
+          )}
         </Popover>
       )}
+      <input
+        ref={iconInput}
+        type="file"
+        accept="image/png,image/*"
+        hidden
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) pickIcon(file);
+        }}
+      />
+
+      {shareOpen && <ShareDialog script={script} owner={owner} onClose={() => setShareOpen(false)} />}
 
       {details && (
         <ScriptDetails

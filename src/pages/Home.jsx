@@ -6,6 +6,10 @@ import Popover from "../components/Popover";
 import Modal from "../components/Modal";
 import { StatTiles, GoalPanel, FunFacts } from "../components/StatsPanel";
 import ScramblesPanel from "../components/ScramblesPanel";
+import { JoinDialog, SharedPanel } from "../components/SharedPanel";
+import { UpdateNotice } from "../components/UpdateGate";
+import { useCloudToggle } from "../components/CloudButton";
+import { removeFromServer } from "../lib/useOwnerShare";
 import { useStore } from "../lib/store";
 import Select from "../components/Select";
 import { scriptStats, newScript, FORMATS } from "../lib/script";
@@ -42,6 +46,9 @@ export default function Home({ navigate }) {
   const [importOpen, setImportOpen] = useState(false);
   const [google, setGoogle] = useState(null);
   const importRef = useRef(null);
+  const cloud = useCloudToggle("script");
+  const [joining, setJoining] = useState(false);
+  const [joinedAt, setJoinedAt] = useState(0);
 
   const statsById = useMemo(() => Object.fromEntries(scripts.map((s) => [s.id, scriptStats(s)])), [scripts]);
 
@@ -146,6 +153,9 @@ export default function Home({ navigate }) {
           <button ref={importRef} className="btn btn-ghost" onClick={() => setImportOpen((v) => !v)}>
             Import ▾
           </button>
+          <button className="btn btn-ghost" onClick={() => setJoining(true)} title="Open a script someone shared with you">
+            Enter Code
+          </button>
           <button className="btn" onClick={newScramble} title="Get an idea down fast">
             + New Scramble
           </button>
@@ -159,6 +169,7 @@ export default function Home({ navigate }) {
       </header>
 
       <div className="home">
+        <UpdateNotice />
         <StatTiles activity={activity} />
 
         <div className="main">
@@ -220,6 +231,7 @@ export default function Home({ navigate }) {
 
           <aside className="rail">
             {Number(settings.dailyGoal) > 0 && <GoalPanel activity={activity} goal={Number(settings.dailyGoal)} />}
+            <SharedPanel refreshKey={joinedAt} onOpen={(id) => navigate({ page: "shared", id })} />
             {store.scrambles.length > 0 && (
               <ScramblesPanel
                 scrambles={store.scrambles}
@@ -236,6 +248,7 @@ export default function Home({ navigate }) {
         </div>
       </div>
 
+      {cloud.dialogs}
       {menuScript && (
         <Popover anchorRef={menu.anchor} width={200} align="right" className="card-menu" onClose={() => setMenu(null)}>
           <button
@@ -246,6 +259,16 @@ export default function Home({ navigate }) {
             }}
           >
             <span className="menu-icon">✎</span>Edit
+          </button>
+          <button
+            className="menu-item"
+            onClick={() => {
+              cloud.toggle(menuScript);
+              setMenu(null);
+            }}
+          >
+            <span className="menu-icon">☁</span>
+            {cloud.isUploaded(menuScript) ? "Keep on This Device Only" : "Upload to Account"}
           </button>
           <button
             className="menu-item"
@@ -353,6 +376,17 @@ export default function Home({ navigate }) {
         </Modal>
       )}
 
+      {joining && (
+        <JoinDialog
+          onClose={() => setJoining(false)}
+          onJoined={() => setJoinedAt(Date.now())}
+          onOpen={(id) => {
+            setJoining(false);
+            navigate({ page: "shared", id });
+          }}
+        />
+      )}
+
       {creating && (
         <ScriptDetails
           script={creating}
@@ -382,11 +416,20 @@ export default function Home({ navigate }) {
       {confirmDelete && (
         <Confirm
           title="Delete Script"
-          body={`“${confirmDelete.title}” and everything in it will be deleted. This can't be undone — export a Fountain copy first if you might want it back.`}
+          body={`“${confirmDelete.title}” and everything in it will be deleted${confirmDelete.cloud ? " from all your devices" : ""}${confirmDelete.share ? ", and its shared copy taken off the server" : ""}. This can't be undone — export a Fountain copy first if you might want it back.`}
           confirmLabel="Delete"
           danger
           onClose={() => setConfirmDelete(null)}
-          onConfirm={() => {
+          onConfirm={async () => {
+            if (confirmDelete.share) {
+              try {
+                await removeFromServer(confirmDelete.share);
+              } catch (err) {
+                setConfirmDelete(null);
+                notify("Script not deleted", { detail: `Its shared copy couldn't be removed: ${err.message}`, tone: "bad" });
+                return;
+              }
+            }
             store.deleteScript(confirmDelete.id);
             setConfirmDelete(null);
             sfx.play("remove");

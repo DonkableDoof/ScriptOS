@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import Confirm from "../components/Confirm";
+import SyncSettings from "../components/SyncSettings";
+import AccountSettings from "../components/AccountSettings";
 import { useStore } from "../lib/store";
 import { SCHEMES, paletteOf } from "../lib/theme";
 import { exportBackup, readBackup, restoreBackup, storageUsage, formatBytes } from "../lib/backup";
@@ -41,7 +43,7 @@ function Segmented({ value, options, onChange }) {
 const SHORTCUTS = [
   ["Enter", "Next element (Scene → Action, Character → Dialogue, Dialogue → Character…)"],
   ["Enter on an empty line", "Swap Action ⇄ Character"],
-  ["Tab / Shift+Tab", "Cycle the element type, or take the suggested name"],
+  ["Tab / Shift+Tab", "Cycle the element type, take the suggested name, or nest a list line"],
   ["/", "Menu of every element and colour"],
   ["Shift+Enter", "Line break inside an element"],
   ["Ctrl+B / I / U", "Bold, italic, underline"],
@@ -57,6 +59,8 @@ const SHORTCUTS = [
   ["Shift+click handles", "Select a range of elements"],
   ["Ctrl+Z / Ctrl+Y", "Undo / redo"],
   ["Ctrl+scroll", "Zoom the page (Ctrl+= / Ctrl+- too, Ctrl+0 for 100%)"],
+  ["F11", "Fullscreen"],
+  ["Ctrl+Enter", "Tick or untick a checkbox (scrambles)"],
 ];
 
 export default function SettingsPage({ navigate }) {
@@ -172,6 +176,35 @@ export default function SettingsPage({ navigate }) {
           <Setting title="Smart suggestions" hint="Offers character names, locations, times of day and transitions as you type.">
             <Toggle on={settings.autocomplete} onChange={(autocomplete) => set({ autocomplete })} />
           </Setting>
+          <Setting title="Spell check" hint="Underlines misspelled words in scripts and scrambles. Right-click one for suggestions or to add it to your dictionary. Character names are always accepted.">
+            <div className="btn-row">
+              {settings.spellcheck && (
+                <Segmented
+                  value={settings.spellLang}
+                  options={[
+                    { value: "en-GB", label: "British" },
+                    { value: "en-US", label: "American" },
+                  ]}
+                  onChange={(spellLang) => set({ spellLang })}
+                />
+              )}
+              <Toggle on={settings.spellcheck} onChange={(spellcheck) => set({ spellcheck })} />
+            </div>
+          </Setting>
+          {settings.spellcheck && (settings.dictionary || []).length > 0 && (
+            <Setting title="Your dictionary" hint="Words you've added. Click × to take one out.">
+              <div className="dict-words">
+                {settings.dictionary.map((w) => (
+                  <span key={w} className="dict-word">
+                    {w}
+                    <button aria-label={`Remove ${w}`} onClick={() => set({ dictionary: settings.dictionary.filter((x) => x !== w) })}>
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            </Setting>
+          )}
           <Setting title="Colour new characters" hint="Gives each new character their own colour, carried through their cue and dialogue. Change or clear a colour from the dot beside their name in the outline.">
             <Toggle on={settings.autoCastColors} onChange={(autoCastColors) => set({ autoCastColors })} />
           </Setting>
@@ -270,6 +303,16 @@ export default function SettingsPage({ navigate }) {
           <Setting title="Include subtext" hint="Subtext lines are private by default too.">
             <Toggle on={settings.exportSubtext} onChange={(exportSubtext) => set({ exportSubtext })} />
           </Setting>
+        </section>
+
+        <section className="settings-group">
+          <h2 className="settings-group-title">Account</h2>
+          <AccountSettings />
+        </section>
+
+        <section className="settings-group">
+          <h2 className="settings-group-title">Sync</h2>
+          <SyncSettings />
         </section>
 
         <section className="settings-group">

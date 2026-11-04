@@ -2,6 +2,7 @@ import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayou
 import { createPortal } from "react-dom";
 import Popover from "./Popover";
 import Swatches from "./Swatches";
+import ChangeRow from "./ChangeRow";
 import NewColor from "./NewColor";
 import {
   emptyBlock,
@@ -11,7 +12,9 @@ import {
   characterName,
 } from "../lib/script";
 import { colorForKey, paletteOf } from "../lib/colors";
-import { SCRIPT_PROFILE } from "../lib/profiles";
+import { SCRIPT_PROFILE, LIST_TYPES, MAX_INDENT } from "../lib/profiles";
+import { useStore } from "../lib/store";
+import { SPELL_SUPPORTED, useSpellcheck } from "../lib/spell";
 import { sfx } from "../lib/sound";
 import { uid } from "../lib/storage";
 import { uiZoom } from "../lib/zoom";
@@ -185,6 +188,59 @@ const rangeHtml = (range) => {
   d.appendChild(range.cloneContents());
   return d.innerHTML;
 };
+
+// ---------------------------------------------------------------------------
+// Copy and paste. The system clipboard only reliably carries text from one line to
+// another, so what was copied is also remembered here with its formatting, colours
+// and element types. A paste uses the memory only while the clipboard still holds the
+// same text; copying anything elsewhere replaces it, and that copy wins. It's shared
+// by every editor, so it also works between a script and the scramble beside it.
+// ---------------------------------------------------------------------------
+let clip = null;
+const clipKey = (text) => String(text).replace(/\r\n?/g, "\n").trimEnd();
+const rememberClip = (next) => {
+  clip = { ...next, key: clipKey(next.text) };
+};
+const clipFor = (text) => (clip && text && clip.key === clipKey(text) ? clip : null);
+
+// The clipboard as text, and through the older copy command if that's refused.
+const writeClipboard = (text) => {
+  const fallback = () => {
+    const onCopy = (e) => {
+      e.preventDefault();
+      e.clipboardData.setData("text/plain", text);
+    };
+    document.addEventListener("copy", onCopy);
+    document.execCommand("copy");
+    document.removeEventListener("copy", onCopy);
+  };
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).catch(fallback);
+  else fallback();
+};
+
+// Copies of blocks for the editor they're landing in. An element it doesn't have
+// (a scene heading pasted into a scramble) becomes its plain text element.
+const adoptBlocks = (blocks, profile) =>
+  blocks
+    .filter((b) => b.type !== "pagebreak" || profile.byKey.pagebreak)
+    .map(({ indent, ...b }) => {
+      const type = profile.byKey[b.type] ? b.type : profile.base;
+      return { ...b, id: uid(), type, ...(indent && LIST_TYPES.has(type) ? { indent } : {}) };
+    });
+
+// A selection's html inside one line, with the formatting around it. Selecting the
+// middle of a bold run clones only the text, so the <b> has to be put back on.
+const selectedHtml = (range, body) => {
+  let html = rangeHtml(range);
+  const common = range.commonAncestorContainer;
+  for (let node = common.nodeType === 1 ? common : common.parentElement; node && node !== body; node = node.parentElement) {
+    const wrap = node.cloneNode(false);
+    wrap.innerHTML = html;
+    html = wrap.outerHTML;
+  }
+  return html;
+};
+
 const stripParens = (html) => {
   let out = String(html || "").trim();
   if (out.startsWith("(")) out = out.slice(1);
@@ -278,6 +334,9 @@ const selectionInfo = (root) => {
 // INT.); `from` limits the rule to lines that are already one of those elements.
 const PREFIXES = [
   { test: /^(int|ext|est|int\.?\/ext|i\/e)\.?\s$/i, type: "scene", keep: true, from: ["action"] },
+  { test: /^\[[ xX]?\]\s$/, type: "todo" },
+  { test: /^[-*]\s$/, type: "bullet" },
+  { test: /^\d+[.)]\s$/, type: "number" },
   { test: /^###\s$/, type: "beat" },
   { test: /^##\s$/, type: "sequence" },
   { test: /^#\s$/, type: "heading" },
@@ -378,7 +437,7 @@ const slashMatches = (query, customs, types) => {
 // ---------------------------------------------------------------------------
 // One line of the script
 // ---------------------------------------------------------------------------
-const Block = memo(function Block({ block, number, selected, active, focusAt, lonely, dropMark, autocomplete, color, api }) {
+const Block = memo(function Block({ block, number, selected, active, focusAt, lonely, dropMark, autocomplete, color, marker, icon, commentCount, changeOwn, changeAfter, api }) {
   const ref = useRef(null);
   const handleRef = useRef(null);
   const [slash, setSlash] = useState(null);
@@ -485,7 +544,8 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
           api.insertPageBreak(block.id, "");
           return;
         }
-        api.patch(block.id, { type: rule.type, html: rule.keep ? escapeHtml(text.toUpperCase()) : "" }, { focus: "end" });
+        const ticked = rule.type === "todo" ? { checked: /x/i.test(text) } : {};
+        api.patch(block.id, { type: rule.type, html: rule.keep ? escapeHtml(text.toUpperCase()) : "", ...ticked }, { focus: "end" });
         setSugOpen(true);
         return;
       }
@@ -580,6 +640,11 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 
     if (mod && !e.altKey) {
       const k = key.toLowerCase();
+      if (key === "Enter" && block.type === "todo") {
+        e.preventDefault();
+        api.patch(block.id, { checked: !block.checked, html: el.innerHTML });
+        return;
+      }
       if (k === "z" && !e.shiftKey) {
         e.preventDefault();
         api.undo();
@@ -670,6 +735,10 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 
     if (key === "Tab") {
       e.preventDefault();
+      if (LIST_TYPES.has(block.type)) {
+        api.indent([block.id], e.shiftKey ? -1 : 1);
+        return;
+      }
       api.cycle(block.id, e.shiftKey ? -1 : 1);
       setSugOpen(true);
       return;
@@ -724,14 +793,24 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
     const text = e.clipboardData?.getData("text/plain") || "";
     e.preventDefault();
     if (!text) return;
-    if (!/\n/.test(text.trim())) {
+    const el = ref.current;
+    const sel = window.getSelection();
+    const copied = clipFor(text);
+    // whole lines keep their element and colour: always when several were copied, and
+    // for a single line when there's nothing on this one for it to join
+    const lineFree = !el.textContent.trim() || sel.toString().length >= el.textContent.length;
+    const wholeLines = copied?.blocks && (copied.kind === "blocks" || lineFree);
+    if (copied && !wholeLines) {
+      exec("insertHTML", copied.html);
+      saveStep();
+      return;
+    }
+    if (!wholeLines && !/\n/.test(text.trim())) {
       document.execCommand("insertText", false, text.replace(/\s+/g, " "));
       return;
     }
-    const blocks = profile.parse(text);
+    const blocks = wholeLines ? adoptBlocks(copied.blocks, profile) : profile.parse(text);
     if (!blocks.length) return;
-    const el = ref.current;
-    const sel = window.getSelection();
     if (!sel.rangeCount) return;
     const range = sel.getRangeAt(0);
     range.deleteContents();
@@ -764,6 +843,10 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
       data-selected={selected}
       data-active={active}
       data-drop={dropMark || undefined}
+      data-checked={(block.type === "todo" && block.checked) || undefined}
+      data-change={changeOwn || undefined}
+      data-change-after={changeAfter || undefined}
+      style={block.indent ? { "--indent": block.indent } : undefined}
     >
       <div className="block-gutter" contentEditable={false}>
         <div
@@ -778,6 +861,34 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
         </div>
         {number != null && <span className="scene-num">{number}</span>}
       </div>
+
+      {commentCount > 0 && (
+        <button className="block-badge" contentEditable={false} tabIndex={-1} title="Comments on this line" onMouseDown={(e) => e.preventDefault()} onClick={() => api.openComments(block.id)}>
+          {commentCount}
+        </button>
+      )}
+      {marker && (
+        <span className="list-marker" contentEditable={false}>
+          {marker}
+        </span>
+      )}
+      {block.type === "todo" && (
+        <button
+          className="todo-box"
+          contentEditable={false}
+          role="checkbox"
+          aria-checked={Boolean(block.checked)}
+          aria-label={block.checked ? "Untick" : "Tick"}
+          title="Ctrl+Enter"
+          tabIndex={-1}
+          // the caret stays where it was while the box is clicked
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => api.patch(block.id, { checked: !block.checked })}
+        >
+          {block.checked && "✓"}
+        </button>
+      )}
+      {icon && <img className="block-icon" src={icon} alt="" draggable={false} />}
 
       {block.type === "pagebreak" ? (
         <div
@@ -796,8 +907,9 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
           className="block-body"
           contentEditable
           suppressContentEditableWarning
-          spellCheck
-          style={color ? { color } : undefined}
+          spellCheck={!SPELL_SUPPORTED}
+          // a note's colour tints its background and bar; its words stay readable
+          style={color ? (block.type === "note" ? { "--note": color } : { color }) : undefined}
           data-block-id={block.id}
           data-placeholder={type.placeholder}
           data-lonely={lonely || undefined}
@@ -885,7 +997,7 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 // ---------------------------------------------------------------------------
 // Handle menu
 // ---------------------------------------------------------------------------
-function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, onDuplicate, onDelete, onClose }) {
+function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, onCopy, onDuplicate, onDelete, onClose }) {
   return (
     <Popover anchorRef={anchorRef} width={240} className="block-menu" onClose={onClose}>
       {block.type !== "pagebreak" && (
@@ -913,6 +1025,11 @@ function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, 
           </button>
         </>
       )}
+      <button className="menu-item" onClick={onCopy}>
+        <span className="menu-icon">⎘</span>
+        {count > 1 ? `Copy ${count}` : "Copy"}
+        <span className="menu-hint">Ctrl+C</span>
+      </button>
       <button className="menu-item" onClick={onDuplicate}>
         <span className="menu-icon">⧉</span>
         {count > 1 ? `Duplicate ${count}` : "Duplicate"}
@@ -1070,9 +1187,11 @@ function SelectionBar({ rootRef, customs, onApplied }) {
 // The editor
 // ---------------------------------------------------------------------------
 const HISTORY_LIMIT = 300;
+let lastEditor = null;
+const BULLETS = ["•", "◦", "▪"];
 const SPEAKING = new Set(["dialogue", "parenthetical", "subtext", "lyrics"]);
 
-const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActive, settings, jump, cast, known, profile = SCRIPT_PROFILE }, outerRef) {
+const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActive, settings, jump, cast, known, commentCounts, onCommentBadge, changesByLine, changeUi, profile = SCRIPT_PROFILE }, outerRef) {
   const rootRef = useRef(null);
   const profileRef = useRef(profile);
   profileRef.current = profile;
@@ -1082,6 +1201,72 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   onChangeRef.current = onChange;
   const onActiveRef = useRef(onActive);
   onActiveRef.current = onActive;
+  const onBadgeRef = useRef(onCommentBadge);
+  onBadgeRef.current = onCommentBadge;
+
+  // Suggested changes show in a card while the pointer is over their line. It stays open
+  // long enough to move onto it and press Accept, and gets out of the way when you type.
+  const [changeCard, setChangeCard] = useState(null);
+  const changesRef = useRef(changesByLine);
+  changesRef.current = changesByLine;
+  const cardTimer = useRef(null);
+  const overLine = useRef(null);
+  const pointer = useRef(null);
+  const typedAt = useRef(null);
+  const closeCardSoon = () => {
+    overLine.current = null;
+    clearTimeout(cardTimer.current);
+    cardTimer.current = setTimeout(() => setChangeCard(null), 250);
+  };
+  const openCard = (id, row) => setChangeCard((c) => (c?.id === id ? c : { id, anchor: { current: row.querySelector(".block-body") || row } }));
+  const onRootMouseMove = (e) => {
+    if (!changesRef.current || e.buttons || !rootRef.current?.contains(e.target)) return;
+    // Typing shifts the page, and the browser reports that as the pointer moving even
+    // though it hasn't. The card only comes back once it really has.
+    if (typedAt.current) {
+      if (Math.abs(e.clientX - typedAt.current.x) < 4 && Math.abs(e.clientY - typedAt.current.y) < 4) return;
+      typedAt.current = null;
+    }
+    const row = e.target.closest?.("[data-row-id]");
+    const id = row?.dataset.rowId || "";
+    if (id === overLine.current) return;
+    if (id && changesRef.current[id]?.length) {
+      overLine.current = id;
+      clearTimeout(cardTimer.current);
+      cardTimer.current = setTimeout(() => openCard(id, row), 150);
+    } else {
+      closeCardSoon();
+      overLine.current = id;
+    }
+  };
+  useEffect(() => {
+    const onMove = (e) => (pointer.current = { x: e.clientX, y: e.clientY });
+    const onKey = () => {
+      typedAt.current = pointer.current || { x: -1000, y: -1000 };
+      overLine.current = null;
+      clearTimeout(cardTimer.current);
+      setChangeCard(null);
+    };
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("keydown", onKey);
+      clearTimeout(cardTimer.current);
+    };
+  }, []);
+  const changeMarks = useMemo(() => {
+    const marks = {};
+    for (const [id, list] of Object.entries(changesByLine || {})) {
+      marks[id] = { own: list.find((c) => c.line === id)?.op, after: list.find((c) => c.line !== id)?.op };
+    }
+    return marks;
+  }, [changesByLine]);
+  const cardChanges = changeCard ? changesByLine?.[changeCard.id] : null;
+  // the last suggestion on the line was just decided
+  useEffect(() => {
+    if (changeCard && !cardChanges?.length) setChangeCard(null);
+  }, [changeCard, cardChanges]);
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const knownRef = useRef(known || []);
@@ -1097,6 +1282,9 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   const [drop, setDrop] = useState(null);
   const [marquee, setMarquee] = useState(null);
   const goalX = useRef(null);
+  const { updateSettings } = useStore();
+  const spell = useSpellcheck(rootRef, blocks, settings);
+  const [spellMenu, setSpellMenu] = useState(null);
   const mouseDown = useRef(false);
   const boxDragged = useRef(false);
   const hist = useRef({ past: [], future: [], lastKind: null, lastAt: 0, lastId: null });
@@ -1119,7 +1307,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     const same =
       !from &&
       next.length === cur.length &&
-      next.every((b, i) => b === cur[i] || (b.id === cur[i].id && b.type === cur[i].type && b.html === cur[i].html && (b.color || null) === (cur[i].color || null)));
+      next.every((b, i) => b === cur[i] || (b.id === cur[i].id && b.type === cur[i].type && b.html === cur[i].html && (b.color || null) === (cur[i].color || null) && (b.indent || 0) === (cur[i].indent || 0) && Boolean(b.checked) === Boolean(cur[i].checked)));
     if (same) {
       if (focus) setFocusReq({ ...focus, t: now + Math.random() });
       return;
@@ -1212,7 +1400,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   // Types over (or deletes, or pastes over) a highlight that may span blocks: the
   // first block keeps what came before it, the last gives up what came after it,
   // and everything in between goes.
-  const replaceHighlight = (text = "") => {
+  const replaceHighlight = (text = "", copied = null) => {
     const root = rootRef.current;
     const info = selectionInfo(root);
     if (!info) return false;
@@ -1237,10 +1425,15 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
 
     let next;
     let focus;
-    if (/\n/.test(clean.trim())) {
-      const parsed = profileRef.current.parse(clean);
+    const lineFree = !textOf(headHtml) && !textOf(tailHtml);
+    const wholeLines = copied?.blocks && (copied.kind === "blocks" || lineFree);
+    if (copied && !wholeLines) {
+      next = [...list.slice(0, from), { ...start, html: headHtml + copied.html + tailHtml }, ...list.slice(to + 1)];
+      focus = { id: start.id, at: htmlLength(headHtml) + htmlLength(copied.html) };
+    } else if (wholeLines || /\n/.test(clean.trim())) {
+      const parsed = wholeLines ? adoptBlocks(copied.blocks, profileRef.current) : profileRef.current.parse(clean);
       const keepHead = textOf(headHtml) ? [{ ...start, html: headHtml }] : [];
-      const keepTail = textOf(tailHtml) ? [emptyBlock(list[to].type, tailHtml)] : [];
+      const keepTail = textOf(tailHtml) ? [{ ...list[to], id: uid(), html: tailHtml }] : [];
       next = [...list.slice(0, from), ...keepHead, ...parsed, ...keepTail, ...list.slice(to + 1)];
       const last = parsed[parsed.length - 1];
       focus = last && last.type !== "pagebreak" ? { id: last.id, at: "end" } : null;
@@ -1255,30 +1448,49 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     return true;
   };
 
-  // A highlight as text for the clipboard: Fountain when it spans elements, so a
-  // paste back in comes out as the same elements.
-  const highlightText = () => {
+  // What a highlight copies. Words inside one line keep their marks and colour; across
+  // lines, or the whole of one line, the lines keep their element and colour too. The
+  // clipboard's text for several lines is Fountain or markdown, so it reads properly
+  // when pasted anywhere else.
+  const clipFromHighlight = () => {
     const info = selectionInfo(rootRef.current);
-    if (!info) return "";
+    if (!info) return null;
     const { range, bodies, startBody, endBody } = info;
     const picked = bodies
       .map((body) => {
         const block = blocksRef.current.find((b) => b.id === body.dataset.blockId);
+        if (!block) return null;
         const r = document.createRange();
         r.selectNodeContents(body);
         if (body === startBody && body.contains(range.startContainer)) r.setStart(range.startContainer, range.startOffset);
         if (body === endBody && body.contains(range.endContainer)) r.setEnd(range.endContainer, range.endOffset);
-        return block && { ...block, html: rangeHtml(r) };
+        return { block, r, body, text: r.toString() };
       })
-      .filter((b) => b && textOf(b.html));
-    if (picked.length <= 1) return picked.length ? plainText(picked[0].html) : "";
-    return profileRef.current.toText(picked);
+      .filter((p) => p && p.text.trim());
+    if (!picked.length) return null;
+    if (picked.length === 1) {
+      const { block, r, body, text } = picked[0];
+      let html = selectedHtml(r, body);
+      // a colour set on the line itself isn't in the words' own html (a note's is its background)
+      if (block.color && block.type !== "note") html = `<span style="color: ${block.color};">${html}</span>`;
+      return { kind: "inline", text, html, blocks: text.length >= body.textContent.length ? [block] : null };
+    }
+    const blocks = picked.map(({ block, r, body }) => ({ ...block, html: selectedHtml(r, body) }));
+    return { kind: "blocks", blocks, text: profileRef.current.toText(blocks), html: blocks.map((b) => `<p>${b.html}</p>`).join("") };
+  };
+
+  // Whole lines, from the selection box or a line's menu.
+  const copyBlocks = (blocks) => {
+    const text = profileRef.current.toText(blocks);
+    rememberClip({ kind: "blocks", blocks, text, html: blocks.map((b) => `<p>${b.html}</p>`).join("") });
+    writeClipboard(text);
   };
 
   const api = useMemo(
     () => ({
       blocks: () => blocksRef.current,
       known: () => knownRef.current,
+      openComments: (id) => onBadgeRef.current?.(id),
       profile: () => profileRef.current,
       customs: () => settingsRef.current.customColors || [],
       docMode: () => rootRef.current?.dataset.docMode === "on",
@@ -1293,7 +1505,9 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           const rect = caretRect();
           if (rect) {
             const delta = rect.top - window.innerHeight * 0.42;
-            if (Math.abs(delta) > 24) window.scrollBy({ top: delta, behavior: "smooth" });
+            // in dual view each document scrolls on its own
+            const scroller = rootRef.current?.closest("[data-scroller]") || window;
+            if (Math.abs(delta) > 24) scroller.scrollBy({ top: delta, behavior: "smooth" });
           }
         }
       },
@@ -1317,6 +1531,15 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       setType: (id, type) => {
         const ids = selectedRef.current.size ? selectedRef.current : new Set([id]);
         commit(blocksRef.current.map((b) => (ids.has(b.id) && b.type !== "pagebreak" ? { ...b, type } : b)));
+      },
+      // Tab and Shift+Tab on list lines
+      indent: (ids, dir) => {
+        const set = new Set(ids);
+        commit(
+          blocksRef.current.map((b) =>
+            set.has(b.id) && LIST_TYPES.has(b.type) ? { ...b, indent: Math.max(0, Math.min(MAX_INDENT, (b.indent || 0) + dir)) } : b
+          )
+        );
       },
       setTypeMany: (ids, type) => {
         const set = new Set(ids);
@@ -1405,6 +1628,14 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         const beforeText = textOf(beforeHtml);
         const afterText = textOf(afterHtml);
         const { screenplay, base, next: following } = profileRef.current;
+        const listed = LIST_TYPES.has(b.type);
+
+        // Enter on an empty list line steps out of the list: up a level, then to text.
+        if (listed && !beforeText && !afterText) {
+          const out = b.indent ? { ...b, indent: b.indent - 1 } : { ...b, type: base, html: "", indent: 0, checked: false };
+          commit(replaceAt(list, i, out), { focus: { id: b.id, at: "start" } });
+          return;
+        }
 
         // Enter on an empty line changes what it is rather than piling up blanks:
         // an empty Character becomes Action, an empty Action becomes Character.
@@ -1415,7 +1646,8 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         }
         // Enter at the very start pushes the line down and leaves a fresh one above.
         if (!beforeText) {
-          const above = emptyBlock(screenplay && b.type === "scene" ? "scene" : base);
+          const above = emptyBlock(listed ? b.type : screenplay && b.type === "scene" ? "scene" : base);
+          if (listed) above.indent = b.indent || 0;
           commit([...list.slice(0, i), above, { ...b, html: afterHtml }, ...list.slice(i + 1)], {
             focus: { id: b.id, at: "start" },
           });
@@ -1431,6 +1663,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         }
         if (type === "parenthetical") html = stripParens(html);
         const nb = emptyBlock(afterText ? type : following[type] || base, afterHtml);
+        if (listed) nb.indent = b.indent || 0;
         commit([...list.slice(0, i), { ...b, type, html }, nb, ...list.slice(i + 1)], {
           focus: { id: nb.id, at: "start" },
         });
@@ -1441,6 +1674,12 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         if (i < 0) return;
         const b = list[i];
         const base = profileRef.current.base;
+        // at the start of a list line: up a level, then back to plain text
+        if (LIST_TYPES.has(b.type)) {
+          const out = b.indent ? { ...b, html, indent: b.indent - 1 } : { ...b, type: base, html, indent: 0, checked: false };
+          commit(replaceAt(list, i, out), { focus: { id, at: "start" } });
+          return;
+        }
         if (!textOf(html)) {
           if (list.length === 1) {
             if (b.type !== base) commit(replaceAt(list, i, { ...b, type: base, html: "" }), { focus: { id, at: "start" } });
@@ -1505,7 +1744,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         if (i < 0) return;
         const b = list[i];
         const head = textOf(beforeHtml) ? [{ ...b, html: beforeHtml }] : [];
-        const tail = textOf(afterHtml) ? [emptyBlock(b.type, afterHtml)] : [];
+        const tail = textOf(afterHtml) ? [{ ...b, id: uid(), html: afterHtml }] : [];
         const last = parsed[parsed.length - 1];
         commit([...list.slice(0, i), ...head, ...parsed, ...tail, ...list.slice(i + 1)], {
           focus: last.type === "pagebreak" ? null : { id: last.id, at: "end" },
@@ -1622,9 +1861,15 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       },
       undo: api.undo,
       redo: api.redo,
+      // a change from outside (accepting a suggestion), as one undoable step
+      applyBlocks: (next) => commit(next),
     }),
     [activeId, api]
   );
+
+  useEffect(() => {
+    lastEditor = rootRef.current;
+  }, []);
 
   // A fresh script is ready to type into the moment it opens.
   useEffect(() => {
@@ -1643,6 +1888,8 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       if (k !== "z" && k !== "y") return;
       const root = rootRef.current;
       if (!root || root.contains(e.target)) return;
+      // with two documents on screen, the one last worked in
+      if (lastEditor !== root && document.contains(lastEditor)) return;
       if (e.target.closest?.("input, textarea, select, [contenteditable='true']") || document.querySelector(".overlay")) return;
       e.preventDefault();
       if (k === "y" || e.shiftKey) api.redo();
@@ -1655,7 +1902,16 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   // Clicking a scene in the sidebar.
   useEffect(() => {
     if (!jump) return;
-    if (blocksRef.current.some((b) => b.id === jump.id)) setFocusReq({ id: jump.id, at: "end", scroll: true, t: Date.now() });
+    if (blocksRef.current.some((b) => b.id === jump.id)) {
+      setFocusReq({ id: jump.id, at: "end", scroll: true, t: Date.now() });
+      if (jump.showChange) {
+        const row = [...(rootRef.current?.querySelectorAll("[data-row-id]") || [])].find((el) => el.dataset.rowId === jump.id);
+        if (row) {
+          clearTimeout(cardTimer.current);
+          setChangeCard({ id: jump.id, anchor: { current: row.querySelector(".block-body") || row } });
+        }
+      }
+    }
   }, [jump]);
 
   // When a cross-block highlight collapses (a click, an arrow key), the editor
@@ -1748,9 +2004,11 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
         return;
       }
 
-      // anywhere around the text: the page's margins and the space beside the page
-      const page = e.target.closest?.(".script-main");
-      if (!page || e.target.closest(".pagebreak, button, input, textarea")) {
+      // anywhere around the text in this document's own area: the page's margins and
+      // the space beside the page
+      const region = root.closest(".script-main, .scramble-pane");
+      const page = region?.contains(e.target) ? region : null;
+      if (!page || e.target.closest(".pagebreak, .change-row, button, input, textarea")) {
         if (selectedRef.current.size && !e.shiftKey) setSelected(new Set());
         return;
       }
@@ -1829,6 +2087,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     }
     if (e.key === "Tab") {
       e.preventDefault();
+      api.indent(touchedIds(), e.shiftKey ? -1 : 1);
       return;
     }
     if (e.shiftKey && !mod && !e.altKey && e.key.startsWith("Arrow")) {
@@ -1901,6 +2160,11 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       setSelected(new Set());
       return;
     }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      api.indent([...ids], e.shiftKey ? -1 : 1);
+      return;
+    }
     if (e.altKey && !mod) {
       const c = colorForKey(e);
       if (c) {
@@ -1917,9 +2181,7 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     }
     if (mod && (k === "c" || k === "x")) {
       e.preventDefault();
-      const picked = blocksRef.current.filter((b) => ids.has(b.id));
-      const text = profileRef.current.toText(picked);
-      navigator.clipboard?.writeText(text).catch(() => {});
+      copyBlocks(blocksRef.current.filter((b) => ids.has(b.id)));
       if (k === "x") removeIds(ids);
       else sfx.play("tap");
       return;
@@ -1972,16 +2234,36 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
   };
 
   const onRootCopy = (e) => {
-    if (rootRef.current?.dataset.docMode !== "on") return;
+    const copied = clipFromHighlight();
+    if (!copied) return;
     e.preventDefault();
-    e.clipboardData.setData("text/plain", highlightText());
+    rememberClip(copied);
+    e.clipboardData.setData("text/plain", copied.text);
+    e.clipboardData.setData("text/html", copied.html);
     if (e.type === "cut") replaceHighlight("");
   };
 
   const onRootPaste = (e) => {
-    if (rootRef.current?.dataset.docMode !== "on") return;
+    const root = rootRef.current;
+    const spanning = root?.dataset.docMode === "on";
+    if (!spanning && !(e.target === root && selectedRef.current.size)) return;
     e.preventDefault();
-    replaceHighlight(e.clipboardData?.getData("text/plain") || "");
+    const text = e.clipboardData?.getData("text/plain") || "";
+    const copied = clipFor(text);
+    if (spanning) {
+      replaceHighlight(text, copied);
+      return;
+    }
+    // Whole lines selected: the paste lands after them and nothing is replaced, so
+    // Ctrl+C then Ctrl+V makes a copy.
+    const profile = profileRef.current;
+    const fresh = copied?.blocks ? adoptBlocks(copied.blocks, profile) : copied ? [emptyBlock(profile.base, copied.html)] : profile.parse(text);
+    if (!fresh.length) return;
+    const list = blocksRef.current;
+    const at = list.reduce((last, b, i) => (selectedRef.current.has(b.id) ? i : last), -1) + 1;
+    commit([...list.slice(0, at), ...fresh, ...list.slice(at)]);
+    setSelected(new Set(fresh.map((b) => b.id)));
+    root.focus({ preventScroll: true });
   };
 
   const sceneNumbers = useMemo(() => {
@@ -2005,6 +2287,65 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
     return map;
   }, [blocks, cast]);
 
+  // List markers: numbers count up within a run of lines at their own level.
+  const markers = useMemo(() => {
+    const map = {};
+    const counts = [];
+    for (const b of blocks) {
+      if (!LIST_TYPES.has(b.type)) {
+        counts.length = 0;
+        continue;
+      }
+      const level = b.indent || 0;
+      counts.length = level + 1;
+      if (b.type === "number") {
+        counts[level] = (counts[level] || 0) + 1;
+        map[b.id] = `${counts[level]}.`;
+      } else {
+        counts[level] = 0;
+        if (b.type === "bullet") map[b.id] = BULLETS[level % BULLETS.length];
+      }
+    }
+    return map;
+  }, [blocks]);
+
+  const icons = useMemo(() => {
+    const map = {};
+    if (cast) {
+      for (const b of blocks) {
+        if (b.type !== "character") continue;
+        const icon = cast[characterName(plainText(b.html))]?.icon;
+        if (icon) map[b.id] = icon;
+      }
+    }
+    return map;
+  }, [blocks, cast]);
+
+  // Right-clicking a word with a red underline. Any other right-click keeps the
+  // usual menu for cut, copy and paste.
+  const onRootContextMenu = (e) => {
+    if (rootRef.current?.dataset.docMode === "on") return;
+    const hit = spell.wordAt(e.clientX, e.clientY);
+    if (!hit) return;
+    e.preventDefault();
+    const rect = hit.range.getBoundingClientRect();
+    setSpellMenu({
+      ...hit,
+      suggestions: spell.suggest(hit.word),
+      anchor: { current: { getBoundingClientRect: () => rect, contains: () => false } },
+    });
+  };
+
+  const fixWord = (replacement) => {
+    const { body, range } = spellMenu;
+    setSpellMenu(null);
+    body.focus({ preventScroll: true });
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    document.execCommand("insertText", false, replacement);
+  };
+
   const menuBlock = menu ? blocks.find((b) => b.id === menu.id) : null;
   const menuTargets = menuBlock && selected.has(menuBlock.id) ? [...selected] : menuBlock ? [menuBlock.id] : [];
   const lonely = blocks.length === 1;
@@ -2016,6 +2357,12 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       tabIndex={-1}
       data-scene-numbers={settings.sceneNumbers}
       data-profile={profile.kind}
+      spellCheck={!SPELL_SUPPORTED}
+      onContextMenu={onRootContextMenu}
+      onMouseMove={onRootMouseMove}
+      onMouseLeave={closeCardSoon}
+      onFocusCapture={() => (lastEditor = rootRef.current)}
+      onPointerDownCapture={() => (lastEditor = rootRef.current)}
       data-selecting={selected.size > 0}
       onKeyDown={onRootKeyDown}
       onCopy={onRootCopy}
@@ -2039,6 +2386,11 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           dropMark={drop && drop.id === b.id ? drop.side : null}
           autocomplete={settings.autocomplete}
           color={b.color || tints[b.id] || null}
+          marker={markers[b.id]}
+          commentCount={commentCounts?.[b.id] || 0}
+          changeOwn={changeMarks[b.id]?.own}
+          changeAfter={changeMarks[b.id]?.after}
+          icon={icons[b.id]}
           api={api}
         />
       ))}
@@ -2060,7 +2412,49 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       />
       {marquee && <div className="marquee" style={marquee} contentEditable={false} />}
 
+      {cardChanges?.length > 0 && (
+        <Popover key={changeCard.id} anchorRef={changeCard.anchor} width={400} className="change-card" onClose={() => setChangeCard(null)}>
+          <div onMouseEnter={() => clearTimeout(cardTimer.current)} onMouseLeave={closeCardSoon}>
+            {cardChanges.map((c) => (
+              <ChangeRow
+                key={c.id}
+                change={c}
+                person={changeUi?.people?.[c.authorId]}
+                mine={c.authorId === changeUi?.me}
+                canDecide={changeUi?.canDecide}
+                stale={changeUi?.staleLines?.has(c.id)}
+                onAccept={changeUi?.onAccept}
+                onReject={changeUi?.onReject}
+                onDiscard={changeUi?.onDiscard}
+              />
+            ))}
+          </div>
+        </Popover>
+      )}
+
       <SelectionBar rootRef={rootRef} customs={settings.customColors} onApplied={syncFromDom} />
+
+      {spellMenu && (
+        <Popover anchorRef={spellMenu.anchor} width={220} className="card-menu spell-menu" onClose={() => setSpellMenu(null)}>
+          {spellMenu.suggestions.map((s) => (
+            <button key={s} className="menu-item" onMouseDown={(e) => e.preventDefault()} onClick={() => fixWord(s)}>
+              {s}
+            </button>
+          ))}
+          {!spellMenu.suggestions.length && <span className="menu-label">No suggestions</span>}
+          <div className="menu-sep" />
+          <button
+            className="menu-item"
+            onClick={() => {
+              updateSettings({ dictionary: [...new Set([...(settings.dictionary || []), spellMenu.word.toLowerCase()])] });
+              setSpellMenu(null);
+              sfx.play("add");
+            }}
+          >
+            <span className="menu-icon">+</span>Add to Dictionary
+          </button>
+        </Popover>
+      )}
 
       {menuBlock && (
         <BlockMenu
@@ -2086,6 +2480,11 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
             const i = list.findIndex((b) => b.id === menuBlock.id);
             const nb = emptyBlock(profile.base);
             commit([...list.slice(0, i + side), nb, ...list.slice(i + side)], { focus: { id: nb.id, at: "start" } });
+          }}
+          onCopy={() => {
+            setMenu(null);
+            copyBlocks(blocksRef.current.filter((b) => menuTargets.includes(b.id)));
+            sfx.play("tap");
           }}
           onDuplicate={() => {
             setMenu(null);

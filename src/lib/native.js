@@ -85,6 +85,18 @@ export async function revealWindow() {
   }
 }
 
+// F11. In a browser preview this is the page's own fullscreen.
+export async function toggleFullscreen() {
+  if (!isNative()) {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+    return;
+  }
+  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+  const win = getCurrentWindow();
+  await win.setFullscreen(!(await win.isFullscreen()));
+}
+
 // Exports go through the native save dialog in the app, and a plain download in a
 // browser. Returns false when the dialog was cancelled.
 export async function saveTextFile(defaultName, contents, { label = "File", extensions = ["txt"] } = {}) {
@@ -144,3 +156,6 @@ export async function fetchGoogleDoc(id) {
   const data = await invoke("fetch_google_doc", { id });
   return data instanceof ArrayBuffer ? data : new Uint8Array(data).buffer;
 }
+
+// The name a device starts with on your account.
+export const deviceName = () => (isNative() ? invoke("device_name") : Promise.resolve("This browser"));

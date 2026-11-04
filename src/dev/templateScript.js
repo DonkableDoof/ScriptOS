@@ -37,7 +37,7 @@ export function templateScript() {
   add("shot", "Close on the door");
   add("action", "The bell above it rings. DEV (40s), soaked, steps inside.");
 
-  note("<b>Character</b>: who speaks. Ctrl+3, or type <b>@</b>. Names you've used come up as you type: press Tab to take the faint suggestion. Enter goes on to Dialogue. Give a character a colour from the dot beside their name in the outline, and it runs through everything they say.");
+  note("<b>Character</b>: who speaks. Ctrl+3, or type <b>@</b>. Names you've used come up as you type: press Tab to take the faint suggestion. Enter goes on to Dialogue. Give a character a colour from the dot beside their name in the outline, and it runs through everything they say. The same menu uploads a small icon, shown in the outline and in front of their name.");
   add("character", "ROSA");
   note("<b>Parenthetical</b>: how a line is said. Ctrl+4, or type <b>(</b> on a dialogue line. The brackets are added for you.");
   add("parenthetical", "not looking up");
@@ -59,6 +59,7 @@ export function templateScript() {
   add("action", "This whole line is blue.", { color: hex("Blue") });
   add("action", `Only <span style="color: ${hex("Orange")};">these words</span> are orange, and <span style="color: ${hex("Purple")};">these</span> purple.`);
   add("action", "A custom colour looks like this one.", { color: "#3fb8a8" });
+  add("note", "On a note, the colour tints the background and the bar. The words stay as they are, unless you highlight some and colour those.", { color: hex("Green") });
 
   // ── the rest ──
   note("<b>Lyrics</b>: sung lines, shown and printed between ♪ notes (they aren't part of the text). Ctrl+Shift+6, or type <b>~</b>.");
@@ -79,7 +80,7 @@ export function templateScript() {
   add("centered", "THE END");
 
   // ── using it ──
-  note("<b>Working with lines.</b> Drag across lines (or Shift+arrows) to highlight text over several of them. Drag in the space around the page to box-select whole lines. <b>Alt+↑/↓</b> moves lines, <b>Ctrl+D</b> duplicates, Tab cycles a line's element type, and Ctrl+A twice selects everything. <b>Ctrl+scroll</b> (or Ctrl+= / Ctrl+-) zooms the page; Ctrl+0 or the % in the status bar puts it back to 100%.");
+  note("<b>Working with lines.</b> Drag across lines (or Shift+arrows) to highlight text over several of them. Drag in the space around the page to box-select whole lines. <b>Alt+↑/↓</b> moves lines, <b>Ctrl+D</b> duplicates, Tab cycles a line's element type, and Ctrl+A twice selects everything. <b>Ctrl+scroll</b> (or Ctrl+= / Ctrl+-) zooms the page; Ctrl+0 or the % in the status bar puts it back to 100%. <b>F11</b> is fullscreen, and <b>Open Scramble</b> in the top bar puts a scramble beside the script. Right-click a word with a red underline to fix it or add it to your dictionary.");
 
   const shown = new Set(blocks.map((b) => b.type));
   const missing = TYPES.filter((t) => !shown.has(t.key)).map((t) => t.label);
