@@ -241,13 +241,6 @@ const selectedHtml = (range, body) => {
   return html;
 };
 
-const stripParens = (html) => {
-  let out = String(html || "").trim();
-  if (out.startsWith("(")) out = out.slice(1);
-  if (out.endsWith(")")) out = out.slice(0, -1);
-  return out;
-};
-
 // ---------------------------------------------------------------------------
 // Highlighting across blocks. Chromium keeps a mouse drag inside the
 // contenteditable it began in, so while a highlight spans blocks the editor
@@ -343,7 +336,6 @@ const PREFIXES = [
   { test: /^-#\s$/, type: "subtext" },
   { test: /^=\s$/, type: "subtext" },
   { test: /^@$/, type: "character" },
-  { test: /^\($/, type: "parenthetical", from: ["action", "dialogue", "parenthetical"] },
   { test: /^><\s?$/, type: "centered" },
   { test: /^>\s$/, type: "transition" },
   { test: /^~$/, type: "lyrics" },
@@ -810,11 +802,6 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
   const onBlur = () => {
     setSugOpen(false);
     setSlash(null);
-    const el = ref.current;
-    if (block.type === "parenthetical") {
-      const clean = stripParens(el.innerHTML);
-      if (clean !== el.innerHTML.trim()) api.patch(block.id, { html: clean }, { typing: true });
-    }
   };
 
   const slashList = slash ? slashMatches(slash.query, api.customs(), profile.types) : [];
@@ -981,6 +968,48 @@ const Block = memo(function Block({ block, number, selected, active, focusAt, lo
 // ---------------------------------------------------------------------------
 // Handle menu
 // ---------------------------------------------------------------------------
+// "Turn Into", with its options popping out to the side while the pointer is on it. A
+// short delay on closing lets the pointer cross the gap between the two.
+function TurnInto({ types, current, onPick }) {
+  const [open, setOpen] = useState(false);
+  const itemRef = useRef(null);
+  const timer = useRef(null);
+  const show = () => {
+    clearTimeout(timer.current);
+    setOpen(true);
+  };
+  const hide = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => setOpen(false), 180);
+  };
+  useEffect(() => () => clearTimeout(timer.current), []);
+
+  return (
+    <>
+      <button ref={itemRef} className="menu-item" data-open={open} aria-haspopup="menu" aria-expanded={open} onMouseEnter={show} onMouseLeave={hide} onClick={show}>
+        <span className="menu-icon">⇄</span>
+        Turn Into
+        <span className="menu-hint">▸</span>
+      </button>
+      {open && (
+        <Popover anchorRef={itemRef} side="right" width={230} className="block-menu" onClose={() => setOpen(false)}>
+          <div className="submenu-area" onMouseEnter={show} onMouseLeave={hide}>
+            {types
+              .filter((t) => t.key !== "pagebreak")
+              .map((t) => (
+                <button key={t.key} className="menu-item" data-on={current === t.key} onClick={() => onPick(t.key)}>
+                  <span className="menu-icon">{t.icon}</span>
+                  {t.label}
+                  <span className="menu-hint">{hotkeyLabel(t)}</span>
+                </button>
+              ))}
+          </div>
+        </Popover>
+      )}
+    </>
+  );
+}
+
 function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, onCopy, onDuplicate, onDelete, onClose }) {
   return (
     <Popover anchorRef={anchorRef} width={240} className="block-menu" onClose={onClose}>
@@ -990,14 +1019,7 @@ function BlockMenu({ anchorRef, block, types, count, onPick, onColor, onInsert, 
           <Swatches value={block.color} onPick={onColor} />
         </>
       )}
-      <span className="menu-label">Turn into</span>
-      {types.filter((t) => t.key !== "pagebreak").map((t) => (
-        <button key={t.key} className="menu-item" data-on={block.type === t.key} onClick={() => onPick(t.key)}>
-          <span className="menu-icon">{t.icon}</span>
-          {t.label}
-          <span className="menu-hint">{hotkeyLabel(t)}</span>
-        </button>
-      ))}
+      <TurnInto types={types} current={block.type} onPick={onPick} />
       <div className="menu-sep" />
       {count === 1 && (
         <>
@@ -1173,7 +1195,7 @@ function SelectionBar({ rootRef, customs, onApplied }) {
 const HISTORY_LIMIT = 300;
 let lastEditor = null;
 const BULLETS = ["•", "◦", "▪"];
-const SPEAKING = new Set(["dialogue", "parenthetical", "subtext", "lyrics"]);
+const SPEAKING = new Set(["dialogue", "subtext", "lyrics"]);
 
 const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActive, settings, jump, cast, known, commentCounts, onCommentBadge, changesByLine, changeUi, profile = SCRIPT_PROFILE }, outerRef) {
   const rootRef = useRef(null);
@@ -1332,8 +1354,8 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
       sfx.play("error");
       return;
     }
-    // Snapshot the caret, then let go of the block before touching the stacks: a
-    // blur can tidy a parenthetical, and that commit must land before we pop.
+    // Snapshot the caret, then let go of the block before touching the stacks, so anything
+    // a blur commits lands before we pop.
     const focus = focusSnapshot();
     dropHighlight();
     document.activeElement?.blur?.();
@@ -1645,7 +1667,6 @@ const ScriptEditor = forwardRef(function ScriptEditor({ blocks, onChange, onActi
           type = "transition";
           html = escapeHtml(beforeText.toUpperCase());
         }
-        if (type === "parenthetical") html = stripParens(html);
         const nb = emptyBlock(afterText ? type : following[type] || base, afterHtml);
         if (listed) nb.indent = b.indent || 0;
         commit([...list.slice(0, i), { ...b, type, html }, nb, ...list.slice(i + 1)], {

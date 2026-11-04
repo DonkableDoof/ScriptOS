@@ -22,7 +22,7 @@ import { notify } from "../lib/notice";
 import { useDocZoom } from "../lib/useDocZoom";
 
 // The everyday elements get a button; the rest live in the slash menu and hotkeys.
-const BAR = ["act", "scene", "action", "character", "parenthetical", "dialogue", "subtext", "transition", "shot", "note", "heading", "sequence", "beat", "centered", "lyrics"];
+const BAR = ["act", "scene", "action", "character", "dialogue", "subtext", "transition", "shot", "note", "heading", "sequence", "beat", "centered", "lyrics"];
 
 export default function ScriptPage({ scriptId, navigate }) {
   const store = useStore();

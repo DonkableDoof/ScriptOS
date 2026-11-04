@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import AccountDialog from "./AccountDialog";
 import { Avatar } from "./CommentsPanel";
 import { saveProfile, shareAvailable, signOut, useAccount } from "../lib/share";
-import { loadImageFile, renderIcon } from "../lib/image";
+import { loadImageFile, ONLINE_ICON_SIZE, renderIcon } from "../lib/image";
 import { notify } from "../lib/notice";
 
 function Row({ title, hint, children }) {
@@ -76,7 +76,7 @@ export default function AccountSettings() {
             e.target.value = "";
             if (!file) return;
             try {
-              await act(saveProfile({ avatar: renderIcon(await loadImageFile(file)) }));
+              await act(saveProfile({ avatar: renderIcon(await loadImageFile(file), ONLINE_ICON_SIZE) }));
             } catch (err) {
               notify("That picture didn't work", { detail: err.message, tone: "bad" });
             }

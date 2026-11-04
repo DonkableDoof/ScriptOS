@@ -1,4 +1,4 @@
-import { emptyBlock, escapeHtml } from "./script";
+import { emptyBlock, escapeHtml, inBrackets } from "./script";
 import { ACT_TEXT } from "./fountain";
 
 // ---------------------------------------------------------------------------
@@ -172,7 +172,8 @@ export function classifyParagraphs(paras) {
 
   const blocks = [];
   let speaking = false;
-  const push = (type, p) => blocks.push(emptyBlock(type, type === "parenthetical" ? p.html.replace(/^\s*\(/, "").replace(/\)\s*$/, "") : p.html));
+  // a paragraph styled as a parenthetical comes in as dialogue, in brackets
+  const push = (type, p) => blocks.push(type === "parenthetical" ? emptyBlock("dialogue", inBrackets(p.html)) : emptyBlock(type, p.html));
 
   paras.forEach((p, i) => {
     if (p.pageBreak && blocks.length) blocks.push(emptyBlock("pagebreak"));
@@ -200,7 +201,7 @@ export function classifyParagraphs(paras) {
     if (SCENE.test(t)) type = "scene";
     else if (caps(t) && ACT_TEXT.test(t)) type = "act";
     else if (TRANSITION.test(t) || (p.jc === "right" && caps(t))) type = "transition";
-    else if (/^\(.*\)$/.test(t) && speaking) type = "parenthetical";
+    else if (/^\(.*\)$/.test(t) && speaking) type = "dialogue";
     else if (
       caps(t) &&
       t.length <= 40 &&
@@ -214,7 +215,7 @@ export function classifyParagraphs(paras) {
     else if (speaking && (!hasIndents || (rel > 0.4 && rel < 2.5))) type = "dialogue";
 
     push(type, p);
-    speaking = ["character", "parenthetical", "dialogue"].includes(type);
+    speaking = ["character", "dialogue"].includes(type);
   });
   return blocks;
 }

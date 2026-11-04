@@ -33,14 +33,12 @@ export function templateScript() {
   add("scene", "INT. ALL-NIGHT DINER - NIGHT");
   note("<b>Action</b>: what we see. Ctrl+2. Enter on an empty Action line turns it into a Character line.");
   add("action", "Rain hammers the windows. A neon sign buzzes <i>OPEN</i> in red. ROSA (40s) wipes the same patch of counter for the third time.");
-  note("<b>Shot</b>: a camera direction. Ctrl+8, or type <b>!!</b> and a space.");
+  note("<b>Shot</b>: a camera direction, with a small camera in front of it. Ctrl+8, or type <b>!!</b> and a space.");
   add("shot", "Close on the door");
   add("action", "The bell above it rings. DEV (40s), soaked, steps inside.");
 
   note("<b>Character</b>: who speaks. Ctrl+3, or type <b>@</b>. Names you've used come up as you type: press Tab to take the faint suggestion. Enter goes on to Dialogue. Give a character a colour from the dot beside their name in the outline, and it runs through everything they say. The same menu uploads a small icon, shown in the outline and in front of their name.");
   add("character", "ROSA");
-  note("<b>Parenthetical</b>: how a line is said. Ctrl+4, or type <b>(</b> on a dialogue line. The brackets are added for you.");
-  add("parenthetical", "not looking up");
   note("<b>Dialogue</b>: what they say. Ctrl+5. Enter goes on to the next Character.");
   add("dialogue", "We're closed.");
   note("<b>Subtext</b>: what they really mean. Ctrl+6, or type <b>-#</b> and a space. Private, like notes.");

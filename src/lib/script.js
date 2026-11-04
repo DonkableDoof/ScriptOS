@@ -6,7 +6,6 @@ export const TYPES = [
   { key: "scene", label: "Scene Heading", icon: "S", hotkey: "1", prefix: "INT. / EXT.", words: "scene heading slugline slug int ext location" },
   { key: "action", label: "Action", icon: "A", hotkey: "2", prefix: "", words: "action description text" },
   { key: "character", label: "Character", icon: "C", hotkey: "3", prefix: "@", placeholder: "CHARACTER", words: "character name speaker cue" },
-  { key: "parenthetical", label: "Parenthetical", icon: "()", hotkey: "4", prefix: "(", words: "parenthetical wryly beat direction" },
   { key: "dialogue", label: "Dialogue", icon: "D", hotkey: "5", prefix: "", words: "dialogue speech line talk" },
   { key: "subtext", label: "Subtext", icon: "≈", hotkey: "6", prefix: "-#", words: "subtext meaning hidden intent" },
   { key: "transition", label: "Transition", icon: "→", hotkey: "7", prefix: ">", words: "transition cut fade dissolve" },
@@ -36,7 +35,6 @@ export const NEXT = {
   scene: "action",
   action: "action",
   character: "dialogue",
-  parenthetical: "dialogue",
   dialogue: "character",
   subtext: "character",
   transition: "scene",
@@ -52,7 +50,7 @@ export const NEXT = {
 };
 
 // Tab walks through the everyday elements; Shift+Tab walks back.
-export const TAB_ORDER = ["action", "character", "dialogue", "parenthetical", "subtext", "transition", "scene"];
+export const TAB_ORDER = ["action", "character", "dialogue", "subtext", "transition", "scene"];
 
 // Elements that are for the writer and never printed (unless the settings say so).
 export const PRIVATE_TYPES = new Set(["note", "subtext"]);
@@ -125,7 +123,6 @@ const LAYOUT = {
   scene: { width: 61, before: 2 },
   action: { width: 61, before: 1 },
   character: { width: 38, before: 1 },
-  parenthetical: { width: 25, before: 0 },
   dialogue: { width: 35, before: 0 },
   transition: { width: 61, before: 1 },
   shot: { width: 61, before: 1 },
@@ -201,7 +198,7 @@ export const scriptStats = (script) => {
         characters[speaker].lines += 1;
         characters[speaker].words += blockMetrics(b).words;
       }
-    } else if (b.type !== "parenthetical" && b.type !== "subtext" && b.type !== "note") {
+    } else if (b.type !== "subtext" && b.type !== "note") {
       // a note to yourself mid-speech doesn't end it
       speaker = null;
     }
@@ -247,11 +244,23 @@ export const FORMATS = [
 export const FORMAT_BY_KEY = Object.fromEntries(FORMATS.map((f) => [f.key, f]));
 export const isTv = (format) => format === "episode";
 
+// Parentheticals were an element of their own, with their brackets drawn on. They're plain
+// dialogue now, so an old line gets real brackets and keeps its words.
+export const inBrackets = (html) => {
+  const text = plainText(html).trim();
+  if (!text) return "";
+  return /^\(.*\)$/s.test(text) ? String(html).trim() : `(${String(html).trim()})`;
+};
+export const withoutParenthetical = (block) =>
+  block.type === "parenthetical" ? { ...block, type: "dialogue", html: inBrackets(block.html) } : block;
+
 // Formats from 1.0, and where each one lives now.
 const OLD_FORMATS = { feature: "movie", pilot: "episode", other: "movie" };
-export const needsMigration = (script) => Boolean(OLD_FORMATS[script.format]) || !script.cast;
+export const needsMigration = (script) => Boolean(OLD_FORMATS[script.format]) || !script.cast || Boolean(script.blocks?.some((b) => b.type === "parenthetical"));
 export const migrateScript = (script) =>
-  needsMigration(script) ? { ...script, format: OLD_FORMATS[script.format] || script.format, cast: script.cast || {} } : script;
+  needsMigration(script)
+    ? { ...script, format: OLD_FORMATS[script.format] || script.format, cast: script.cast || {}, blocks: script.blocks?.map(withoutParenthetical) }
+    : script;
 
 export const episodeLabel = (script) => {
   if (!isTv(script?.format)) return "";

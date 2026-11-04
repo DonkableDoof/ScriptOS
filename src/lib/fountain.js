@@ -91,8 +91,7 @@ export function parseFountain(text, { titlePage = false } = {}) {
     }
 
     if (inDialogue) {
-      if (/^\(.*\)$/.test(line)) push("parenthetical", line.slice(1, -1));
-      else if (/^~/.test(line)) push("lyrics", line.replace(/^~\s*/, ""));
+      if (/^~/.test(line)) push("lyrics", line.replace(/^~\s*/, ""));
       else if (/^\[\[subtext:\s*(.*)\]\]$/i.test(line)) push("subtext", line.replace(/^\[\[subtext:\s*/i, "").replace(/\]\]$/, ""));
       else push("dialogue", line);
       continue;
@@ -204,8 +203,8 @@ function writeBody(blocks, out, { includeNotes, includeSubtext }) {
     if (!text && b.type !== "pagebreak") continue;
 
     const tight =
-      (b.type === "dialogue" || b.type === "parenthetical" || b.type === "subtext" || b.type === "lyrics") &&
-      prev && ["character", "parenthetical", "dialogue", "subtext", "lyrics"].includes(prev);
+      (b.type === "dialogue" || b.type === "subtext" || b.type === "lyrics") &&
+      prev && ["character", "dialogue", "subtext", "lyrics"].includes(prev);
     if (!tight) out.push("");
 
     switch (b.type) {
@@ -219,9 +218,6 @@ function writeBody(blocks, out, { includeNotes, includeSubtext }) {
         out.push(isAllCaps(up) ? up : `@${up}`);
         break;
       }
-      case "parenthetical":
-        out.push(`(${text.replace(/^\(|\)$/g, "")})`);
-        break;
       case "transition": {
         const up = text.toUpperCase();
         out.push(/TO:$/.test(up) ? up : `> ${up}`);
@@ -289,7 +285,6 @@ const COLUMNS = {
   action: { indent: 0, width: 60 },
   shot: { indent: 0, width: 60, upper: true },
   character: { indent: 22, width: 38, upper: true },
-  parenthetical: { indent: 16, width: 25 },
   dialogue: { indent: 10, width: 35 },
   lyrics: { indent: 10, width: 35 },
   subtext: { indent: 10, width: 35 },
@@ -317,11 +312,10 @@ export function toPlainText(script, { includeNotes = false, includeSubtext = fal
     if (!text) continue;
     const col = COLUMNS[b.type] || COLUMNS.action;
     if (col.upper) text = text.toUpperCase();
-    if (b.type === "parenthetical") text = `(${text.replace(/^\(|\)$/g, "")})`;
     if (b.type === "note") text = `[NOTE: ${text}]`;
     if (b.type === "subtext") text = `[${text}]`;
 
-    const tight = ["dialogue", "parenthetical", "subtext", "lyrics"].includes(b.type) && ["character", "parenthetical", "dialogue", "subtext", "lyrics"].includes(prev);
+    const tight = ["dialogue", "subtext", "lyrics"].includes(b.type) && ["character", "dialogue", "subtext", "lyrics"].includes(prev);
     if (out.length && !tight) out.push("");
     if (b.type === "scene" && out.length) out.push("");
 

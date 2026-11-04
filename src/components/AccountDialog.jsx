@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import Modal from "./Modal";
 import { Avatar } from "./CommentsPanel";
 import { signIn, signUp } from "../lib/share";
-import { loadImageFile, renderIcon } from "../lib/image";
+import { loadImageFile, ONLINE_ICON_SIZE, renderIcon } from "../lib/image";
 import { sfx } from "../lib/sound";
 
 // An account: an email and password, a name other people see, and optionally a picture.
@@ -21,7 +21,7 @@ export default function AccountDialog({ onDone, onClose }) {
 
   const pick = async (file) => {
     try {
-      setAvatar(renderIcon(await loadImageFile(file)));
+      setAvatar(renderIcon(await loadImageFile(file), ONLINE_ICON_SIZE));
     } catch (err) {
       setError(err.message);
     }

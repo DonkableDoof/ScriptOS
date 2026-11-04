@@ -3,6 +3,7 @@ import { useStore } from "../lib/store";
 import { SYNC_NOW, setSyncStatus, syncRound } from "../lib/cloud";
 import { backend, useAccount } from "../lib/share";
 import { deviceName } from "../lib/native";
+import { shrinkItemIcons } from "../lib/image";
 import { notify } from "../lib/notice";
 
 const EVERY = 20000;
@@ -53,7 +54,7 @@ export default function SyncAgent() {
           io: {
             list: api.cloudList,
             fetch: api.cloudFetch,
-            push: api.cloudPush,
+            push: async (id, kind, data, baseRev) => api.cloudPush(id, kind, await shrinkItemIcons(data), baseRev),
             setState: api.cloudSetState,
             checkin: api.deviceCheckin,
             devices: api.devicesList,

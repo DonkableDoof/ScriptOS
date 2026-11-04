@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { realBackend, AUTH_KEY } from "./shareBackend";
 import { safeColor, safeImage, sanitizeHtml } from "./sanitize";
-import { PRIVATE_TYPES, TYPE_BY_KEY } from "./script";
+import { PRIVATE_TYPES, TYPE_BY_KEY, withoutParenthetical } from "./script";
+import { shrinkCast, shrinkIcon } from "./image";
 
 // ---------------------------------------------------------------------------
 // Share. Sharing uploads a copy of a script; other people read it, comment on it and
@@ -65,7 +66,14 @@ export async function refreshAccount() {
   let profile = null;
   if (user) {
     try {
-      profile = cleanProfile(await api.getProfile(user.id));
+      const row = await api.getProfile(user.id);
+      // a picture saved before pictures were limited to icon size
+      const small = row?.avatar ? await shrinkIcon(row.avatar) : null;
+      if (small && small !== row.avatar) {
+        await api.saveProfile(user.id, { avatar: small });
+        row.avatar = small;
+      }
+      profile = cleanProfile(row);
     } catch {
       profile = account.profile; // offline: keep showing what we knew
     }
@@ -175,7 +183,7 @@ export const snapshotKey = (snapshot) => {
 export async function startShare(script, { access, includeNotes, includeSubtext }) {
   const api = await backend();
   const snapshot = buildSnapshot(script, { includeNotes, includeSubtext });
-  const row = await api.createShare({ ...snapshot, owner: account.user.id, access });
+  const row = await api.createShare({ ...snapshot, characters: await shrinkCast(snapshot.characters), owner: account.user.id, access });
   return {
     id: row.id,
     code: row.code,
@@ -198,7 +206,7 @@ export async function uploadChanges(script) {
   const now = parts(snapshot);
   const was = script.share.uploadedParts || {};
   const fields = {};
-  for (const key of Object.keys(now)) if (now[key] !== was[key]) fields[key] = snapshot[key];
+  for (const key of Object.keys(now)) if (now[key] !== was[key]) fields[key] = key === "characters" ? await shrinkCast(snapshot.characters) : snapshot[key];
   if (Object.keys(fields).length) {
     const row = await api.updateShare(script.share.id, fields);
     if (!row) throw new Error("This script is no longer on the server.");
@@ -277,7 +285,9 @@ const cleanShare = (row) => {
     draft: text(row.script?.draft),
     logline: text(row.script?.logline),
     blocks: blocks
-      .filter((b) => b && TYPE_BY_KEY[b.type])
+      .filter(Boolean)
+      .map(withoutParenthetical)
+      .filter((b) => TYPE_BY_KEY[b.type])
       .map((b) => ({
         id: String(b.id),
         type: b.type,

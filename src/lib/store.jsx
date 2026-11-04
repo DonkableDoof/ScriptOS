@@ -107,6 +107,8 @@ function Store({ snapshot, children }) {
           for (const x of r.localize) if (x.kind === kind) next = next.map((i) => (i.id === x.id ? asLocal(i) : i));
           for (const x of r.upserts) {
             if (x.kind !== kind) continue;
+            // from a device that hasn't updated yet, this may still be in an old shape
+            if (kind === "script") x.item = migrateScript(x.item);
             const cur = next.find((i) => i.id === x.item.id);
             if (cur && seen && cur !== seen.get(cur.id)) {
               delete items[cur.id];
